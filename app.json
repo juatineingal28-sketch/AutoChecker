@@ -1,0 +1,58 @@
+{
+  "expo": {
+    "name": "AutoChecker",
+    "slug": "autochecker",
+    "scheme": "autochecker",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "updates": {
+      "enabled": false,
+      "fallbackToCacheTimeout": 0,
+      "checkAutomatically": "NEVER"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Allow AutoChecker to access your camera to scan exam papers",
+        "NSPhotoLibraryUsageDescription": "Allow AutoChecker to access photos for scanning answer sheets"
+      }
+    },
+    "android": {
+      "package": "com.autochecker.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#065F46"
+      },
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "Allow AutoChecker to access your camera to scan exam papers",
+          "photosPermission": "Allow AutoChecker to access photos for scanning answer sheets"
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow AutoChecker to access your camera to scan exam papers"
+        }
+      ],
+      "expo-asset",
+      "expo-font"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "ddad51ff-d42e-45d3-b071-b68c1bc9e7cb"
+      }
+    }
+  }
+}
