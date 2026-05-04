@@ -378,7 +378,7 @@
     "path-parse": "^1.0.7",
     "path-scurry": "^1.11.1",
     "path-type": "^4.0.0",
-    "pdf-parse": "1.1.1",
+    "pdf-parse": "^1.1.1",
     "pdfjs-dist": "^5.6.205",
     "picocolors": "^1.1.1",
     "picomatch": "^3.0.2",
