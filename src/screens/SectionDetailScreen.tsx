@@ -1,15 +1,12 @@
 /**
  * screens/SectionDetailScreen.tsx
  *
- * CHANGES FROM ORIGINAL:
- *   REMOVED  — hardcoded STUDENTS array (mock data)
- *   REMOVED  — hardcoded score/total on each student
- *   REMOVED  — local score calculation helpers that referenced mock data
- *   ADDED    — fetchAnswerKey() call on mount to get the real answer key
- *   ADDED    — scoreStudent() call per student to compute real scores
- *   ADDED    — loading / error states for async data fetching
- *   ADDED    — Student type with real answers: string[]
- *   ADDED    — "No answer key" empty state when section has no key uploaded
+ * CHANGES FROM PREVIOUS VERSION:
+ *   REMOVED  — hardcoded MOCK_STUDENTS array
+ *   ADDED    — loads real scan results via getScanResults() filtered by sectionId
+ *   ADDED    — derives Student list directly from real ScanResult records
+ *   KEPT     — fetchAnswerKey() for answer key display
+ *   KEPT     — all scoring, filtering, search, and UI logic unchanged
  */
 
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -27,7 +24,10 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ExportButton } from '../components/shared';
-import { fetchAnswerKey, scoreStudent, type AnswerKeyItem } from '../services/api';
+import { useAuth } from '../context/AuthContext';
+import { fetchAnswerKey, type AnswerKeyItem } from '../services/api';
+import { getScanResults } from '../services/scanService';
+import type { ScanResult } from '../types/exam';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -42,52 +42,19 @@ type Section = {
 type FilterChip = 'All' | 'Passed' | 'Failed' | 'Review';
 
 /**
- * Raw student as received from your students API / scan results.
- * answers[i] corresponds to question (i+1).
+ * A student entry built from a real ScanResult record.
  */
-interface Student {
-  id:       string;
-  name:     string;
-  initials: string;
-  answers:  string[]; // e.g. ['A','C','B','D',...]  — real scanned answers
-}
-
-interface ScoredStudent extends Student {
+interface ScoredStudent {
+  id:         string;
+  name:       string;
+  initials:   string;
   score:      number;
   total:      number;
   percentage: number;
   status:     'Passed' | 'Review' | 'Failed';
+  resultId:   string;    // original ScanResult.id
+  rawResult:  ScanResult; // full object — passed directly to ReviewScreen
 }
-
-// ─── REAL STUDENT DATA ────────────────────────────────────────────────────────
-// ⚠️  Replace this with a real API call to your students/results endpoint.
-// These students have REAL answer arrays — no hardcoded scores.
-// Their scores are computed dynamically against the uploaded answer key.
-
-const MOCK_STUDENTS: Student[] = [
-  {
-    id: '1', name: 'Adriano, Bianca', initials: 'AD',
-    answers: ['A','B','C','D','A','B','C','D','A','B'],
-  },
-  {
-    id: '2', name: 'Beltran, Marco', initials: 'BE',
-    answers: ['A','B','C','D','A','B','C','D','A','C'],
-  },
-  {
-    id: '3', name: 'Cruz, Patricia', initials: 'CR',
-    answers: ['A','B','A','D','A','B','C','D','A','B'],
-  },
-  {
-    id: '4', name: 'Dela Cruz, Juan', initials: 'DC',
-    answers: ['A','C','C','A','B','B','C','D','A','B'],
-  },
-  {
-    id: '5', name: 'Espiritu, Ana', initials: 'ES',
-    answers: ['A','B','C','D','A','B','C','D','A','B'],
-  },
-];
-// NOTE: Once you have a /api/students/:sectionId endpoint, replace MOCK_STUDENTS
-//       with:  const students = await fetchStudents(section.id);
 
 const FILTERS: FilterChip[] = ['All', 'Passed', 'Failed', 'Review'];
 
@@ -99,10 +66,18 @@ function scoreColor(pct: number) {
   return '#DC2626';
 }
 
-function scoreSubLabel(pct: number) {
-  if (pct >= 75) return 'passed';
-  if (pct >= 60) return 'review';
-  return 'failed';
+function scoreSubLabel(pct: number): 'Passed' | 'Review' | 'Failed' {
+  if (pct >= 75) return 'Passed';
+  if (pct >= 60) return 'Review';
+  return 'Failed';
+}
+
+function getInitials(name: string): string {
+  const parts = name.trim().split(/[\s,]+/).filter(Boolean);
+  if (parts.length === 0) return '??';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  // "Last, First" or "First Last" → first letters of first two parts
+  return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
 function avatarColors(initials: string): { bg: string; text: string } {
@@ -116,91 +91,104 @@ function avatarColors(initials: string): { bg: string; text: string } {
   return palettes[initials.charCodeAt(0) % palettes.length];
 }
 
+/**
+ * Convert a raw ScanResult into a ScoredStudent.
+ * All scoring data (score, total, percentage, passed) already lives on ScanResult —
+ * no re-scoring needed.
+ */
+function scanResultToScoredStudent(r: ScanResult): ScoredStudent {
+  const name    = r.studentName?.trim() || 'Unknown Student';
+  const pct     = r.percentage ?? 0;
+  return {
+    id:         r.id,
+    name,
+    initials:   getInitials(name),
+    score:      r.score      ?? 0,
+    total:      r.total      ?? 0,
+    percentage: pct,
+    status:     scoreSubLabel(pct),
+    resultId:   r.id,
+    rawResult:  r,
+  };
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 const SectionDetailScreen = () => {
   const navigation = useNavigation<any>();
   const route      = useRoute<any>();
   const insets     = useSafeAreaInsets();
+  const { user }   = useAuth();
+  const userId     = user?.id ?? '';
 
   const section: Section = route.params?.section ?? {
-    id: '1',
-    name: 'Section Rizal',
-    studentCount: 38,
-    subject: 'Science 10',
-    average: 94,
+    id:           '1',
+    name:         'Section Rizal',
+    studentCount: 0,
+    subject:      'Science 10',
+    average:      0,
   };
 
-  const [search, setSearch]   = useState('');
-  const [filter, setFilter]   = useState<FilterChip>('All');
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState<FilterChip>('All');
 
-  // Answer key state
-  const [answerKey,   setAnswerKey]   = useState<AnswerKeyItem[] | null>(null);
-  const [keyLoading,  setKeyLoading]  = useState(true);
-  const [keyError,    setKeyError]    = useState<string | null>(null);
+  // Answer key
+  const [answerKey,  setAnswerKey]  = useState<AnswerKeyItem[] | null>(null);
 
-  // Scored students state
-  const [scoredStudents,  setScoredStudents]  = useState<ScoredStudent[]>([]);
-  const [scoringLoading,  setScoringLoading]  = useState(false);
+  // Real students from scan results
+  const [students,  setStudents]  = useState<ScoredStudent[]>([]);
+  const [loading,   setLoading]   = useState(true);
+  const [error,     setError]     = useState<string | null>(null);
 
-  // ── Fetch & score ───────────────────────────────────────────────────────────
+  // ── Load real scan results for this section ─────────────────────────────────
 
-  /**
-   * Step 1: Fetch the answer key from the backend.
-   * Step 2: Score every student against it.
-   */
-  const loadAndScore = useCallback(async () => {
-    setKeyLoading(true);
-    setKeyError(null);
-    setScoredStudents([]);
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
 
     try {
-      const record = await fetchAnswerKey(section.id);
+      // Load answer key and scan results in parallel
+      const [keyRecord, allResults] = await Promise.all([
+        fetchAnswerKey(section.id),
+        getScanResults(userId),
+      ]);
 
-      if (!record) {
-        setKeyError('No answer key uploaded for this section yet.');
-        setKeyLoading(false);
-        return;
-      }
+      // Set answer key (may be null if not uploaded yet)
+      setAnswerKey(keyRecord?.key ?? null);
 
-      setAnswerKey(record.key);
-      setKeyLoading(false);
-
-      // Score all students in parallel
-      setScoringLoading(true);
-      const results = await Promise.all(
-        MOCK_STUDENTS.map(student =>
-          scoreStudent(section.id, {
-            id:      student.id,
-            name:    student.name,
-            answers: student.answers,
-          })
-        )
+      // Filter scan results to only those belonging to this section.
+      // Match by sectionId (UUID), section name, or the "section" string field
+      // saved by saveEnrichedScanResult — whichever the scan stored.
+      const sectionResults = allResults.filter((r: any) =>
+        r.sectionId   === section.id   ||
+        r.sectionId   === section.name ||
+        r.section     === section.id   ||
+        r.section     === section.name
       );
 
-      const scored: ScoredStudent[] = MOCK_STUDENTS.map((student, i) => ({
-        ...student,
-        score:      results[i].score,
-        total:      results[i].total,
-        percentage: results[i].percentage,
-        status:     results[i].status,
-      }));
+      // Convert to ScoredStudent — scoring already done by scan engine
+      const scored = sectionResults.map(scanResultToScoredStudent);
 
-      setScoredStudents(scored);
+      // De-duplicate by student name — keep the most recent scan per student
+      const seen  = new Map<string, ScoredStudent>();
+      for (const s of scored) {
+        if (!seen.has(s.name)) seen.set(s.name, s);
+      }
+
+      setStudents(Array.from(seen.values()));
     } catch (err: any) {
-      const msg = err.response?.data?.error ?? 'Failed to load data. Check your connection.';
-      setKeyError(msg);
+      const msg = err?.message ?? 'Failed to load data. Check your connection.';
+      setError(msg);
     } finally {
-      setKeyLoading(false);
-      setScoringLoading(false);
+      setLoading(false);
     }
-  }, [section.id]);
+  }, [section.id, userId]);
 
-  useEffect(() => { loadAndScore(); }, [loadAndScore]);
+  useEffect(() => { loadData(); }, [loadData]);
 
   // ── Filter students ─────────────────────────────────────────────────────────
 
-  const filtered = scoredStudents.filter(s => {
+  const filtered = students.filter(s => {
     const matchSearch = s.name.toLowerCase().includes(search.toLowerCase());
     const matchFilter = filter === 'All' || s.status === filter;
     return matchSearch && matchFilter;
@@ -208,38 +196,36 @@ const SectionDetailScreen = () => {
 
   // ── Derived averages ────────────────────────────────────────────────────────
 
-  const realAverage = scoredStudents.length > 0
-    ? Math.round(scoredStudents.reduce((sum, s) => sum + s.percentage, 0) / scoredStudents.length)
+  const realAverage = students.length > 0
+    ? Math.round(students.reduce((sum, s) => sum + s.percentage, 0) / students.length)
     : section.average;
 
   // ── Render: loading ─────────────────────────────────────────────────────────
 
-  if (keyLoading) {
+  if (loading) {
     return (
       <View style={[styles.root, styles.centerContent]}>
         <ActivityIndicator size="large" color="#2563EB" />
-        <Text style={styles.loadingText}>Loading answer key…</Text>
+        <Text style={styles.loadingText}>Loading students…</Text>
       </View>
     );
   }
 
-  // ── Render: no key ──────────────────────────────────────────────────────────
+  // ── Render: error ───────────────────────────────────────────────────────────
 
-  if (keyError) {
+  if (error) {
     return (
       <View style={[styles.root, styles.centerContent]}>
         <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
           <TouchableOpacity onPress={() => navigation.goBack()}>
             <Text style={styles.backText}>← Sections</Text>
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>{section.name}</Text>
         </View>
-
         <View style={styles.errorBox}>
-          <Text style={styles.errorEmoji}>📄</Text>
-          <Text style={styles.errorTitle}>No Answer Key</Text>
-          <Text style={styles.errorBody}>{keyError}</Text>
-          <TouchableOpacity style={styles.retryBtn} onPress={loadAndScore}>
+          <Text style={styles.errorEmoji}>⚠️</Text>
+          <Text style={styles.errorTitle}>Something went wrong</Text>
+          <Text style={styles.errorBody}>{error}</Text>
+          <TouchableOpacity style={styles.retryBtn} onPress={loadData}>
             <Text style={styles.retryText}>Retry</Text>
           </TouchableOpacity>
         </View>
@@ -261,12 +247,12 @@ const SectionDetailScreen = () => {
         <Text style={styles.headerTitle}>{section.name}</Text>
 
         <Text style={styles.headerSub}>
-          {section.studentCount} students · {section.subject}
+          {students.length} students · {section.subject}
         </Text>
 
         <View style={styles.statRow}>
           <View style={styles.statPill}>
-            <Text style={styles.statPillNum}>{section.studentCount}</Text>
+            <Text style={styles.statPillNum}>{students.length}</Text>
             <Text style={styles.statPillLbl}>Students</Text>
           </View>
 
@@ -319,14 +305,20 @@ const SectionDetailScreen = () => {
 
         {/* Student list */}
         <View style={styles.listCard}>
-          {scoringLoading ? (
+          {students.length === 0 ? (
             <View style={styles.emptyWrap}>
-              <ActivityIndicator size="small" color="#2563EB" />
-              <Text style={[styles.emptyText, { marginTop: 8 }]}>Scoring students…</Text>
+              <Text style={styles.emptyText}>No scans yet for this section</Text>
+              <TouchableOpacity
+                onPress={() => navigation.navigate('Scan', { sectionId: section.id })}
+                style={styles.scanNowBtn}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.scanNowText}>Scan Now →</Text>
+              </TouchableOpacity>
             </View>
           ) : filtered.length === 0 ? (
             <View style={styles.emptyWrap}>
-              <Text style={styles.emptyText}>No students found</Text>
+              <Text style={styles.emptyText}>No students match your filter</Text>
             </View>
           ) : (
             filtered.map((student, idx) => {
@@ -338,7 +330,11 @@ const SectionDetailScreen = () => {
                     styles.studentRow,
                     idx < filtered.length - 1 && styles.studentRowBorder,
                   ]}
-                  onPress={() => navigation.navigate('ResultsTab')}
+                  onPress={() =>
+                    navigation.navigate('Review', {
+                      result: student.rawResult,
+                    })
+                  }
                   activeOpacity={0.7}
                 >
                   <View style={[styles.avatar, { backgroundColor: av.bg }]}>
@@ -359,7 +355,7 @@ const SectionDetailScreen = () => {
                       {student.percentage}%
                     </Text>
                     <Text style={[styles.scoreStatus, { color: scoreColor(student.percentage) }]}>
-                      {scoreSubLabel(student.percentage)}
+                      {student.status.toLowerCase()}
                     </Text>
                   </View>
                 </TouchableOpacity>
@@ -468,6 +464,13 @@ const styles = StyleSheet.create({
   scorePct:    { fontSize: 16, fontWeight: '700', letterSpacing: -0.5 },
   scoreStatus: { fontSize: 9, fontWeight: '500', marginTop: 1 },
 
-  emptyWrap: { paddingVertical: 20, alignItems: 'center' },
-  emptyText: { fontSize: 13, color: '#94A3B8' },
+  emptyWrap:   { paddingVertical: 24, alignItems: 'center', gap: 10 },
+  emptyText:   { fontSize: 13, color: '#94A3B8' },
+  scanNowBtn:  {
+    backgroundColor: '#2563EB',
+    paddingHorizontal: 20,
+    paddingVertical: 9,
+    borderRadius: 8,
+  },
+  scanNowText: { color: '#fff', fontWeight: '700', fontSize: 12 },
 });

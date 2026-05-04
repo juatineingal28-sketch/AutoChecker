@@ -6,17 +6,22 @@ import React, { useEffect } from "react";
 import EditProfileScreen from "../screens/EditProfileScreen";
 import LoginScreen from "../screens/LoginScreen";
 import RegisterScreen from "../screens/RegisterScreen";
-import ResetPasswordScreen from "../screens/ResetPasswordScreen";
 import ReviewScreen from "../screens/ReviewScreen";
 import SectionDetailScreen from "../screens/SectionDetailScreen";
 import MainTabs from "./MainTabs";
 
+import AddAnswerKeyScreen from "../screens/AddAnswerKeyScreen";
+import EditAnswerKeyScreen from "../screens/EditAnswerKeyScreen";
+import ManageAnswerKeysScreen from "../screens/ManageAnswerKeysScreen";
+
 import { useAuth } from "../context/AuthContext";
+import WelcomeScreen from "../screens/WelcomeScreen";
+import { AnswerKeyRecord } from "../services/api";
 
 export type RootStackParamList = {
+  Welcome: undefined;
   Login: undefined;
   Register: undefined;
-  ResetPassword: undefined;
   MainTabs: { screen?: string; params?: Record<string, unknown> } | undefined;
   Review: undefined;
   ResultScreen: {
@@ -27,6 +32,16 @@ export type RootStackParamList = {
   Results: undefined;
   SectionDetail: { section: Record<string, unknown> };
   EditProfile: undefined;
+  ManageAnswerKeys: { mode?: string } | undefined;
+  AddAnswerKey: {
+    sectionId:   string;
+    sectionName: string;
+  };
+  EditAnswerKey: {
+    sectionId:   string;
+    sectionName: string;
+    keyRecord:   AnswerKeyRecord;
+  };
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -41,17 +56,15 @@ function ResultsRedirect({ navigation }: any) {
 export default function AppNavigator() {
   const { user, isPasswordRecovery } = useAuth();
 
-  // Splash is gone from here — it now lives in App.tsx above AuthProvider
-  // so auth state changes never touch it.
+  const showAuthStack = !user || isPasswordRecovery;
 
   return (
     <NavigationContainer>
       <Stack.Navigator screenOptions={{ headerShown: false }}>
 
-        {isPasswordRecovery ? (
-          <Stack.Screen name="ResetPassword" component={ResetPasswordScreen} />
-        ) : !user ? (
+        {showAuthStack ? (
           <>
+            <Stack.Screen name="Welcome" component={WelcomeScreen} />
             <Stack.Screen name="Login" component={LoginScreen} />
             <Stack.Screen name="Register" component={RegisterScreen} />
           </>
@@ -63,6 +76,9 @@ export default function AppNavigator() {
             <Stack.Screen name="Results" component={ResultsRedirect} />
             <Stack.Screen name="ResultScreen" component={ReviewScreen} />
             <Stack.Screen name="EditProfile" component={EditProfileScreen} />
+            <Stack.Screen name="ManageAnswerKeys" component={ManageAnswerKeysScreen} />
+            <Stack.Screen name="AddAnswerKey" component={AddAnswerKeyScreen} />
+            <Stack.Screen name="EditAnswerKey" component={EditAnswerKeyScreen} />
           </>
         )}
 

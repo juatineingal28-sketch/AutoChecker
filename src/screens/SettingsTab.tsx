@@ -5,6 +5,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
+  Modal,
   ScrollView,
   StyleSheet,
   Switch,
@@ -13,6 +15,7 @@ import {
   View,
 } from 'react-native';
 import { useAuth } from '../context/AuthContext';
+import { fetchSections, type Section } from '../services/api';
 import {
   DEFAULT_SETTINGS,
   UserSettings,
@@ -178,6 +181,8 @@ export default function SettingsScreen({ onLogout }: Props) {
   const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS);
   const [loading,  setLoading]  = useState(true);
   const [saving,   setSaving]   = useState(false);
+  const [showSectionPicker, setShowSectionPicker] = useState(false);
+  const [sections, setSections] = useState<Section[]>([]);
 
   // Keep a ref to the last known good state for rollbacks
   const committed = useRef<UserSettings>(DEFAULT_SETTINGS);
@@ -290,56 +295,36 @@ export default function SettingsScreen({ onLogout }: Props) {
   };
 
   const handleExportData = useCallback(async () => {
-    try {
-      const resp = await fetch('/api/export', { method: 'GET' });
-      if (!resp.ok) throw new Error(await resp.text());
-      Alert.alert('Export started', 'Your data export has been initiated.');
-    } catch (err) {
-      console.error('[SettingsScreen] Export failed:', err);
-      Alert.alert('Export failed', 'Could not start the export. Please try again.');
-    }
+    Alert.alert(
+      'Export Data',
+      'This will export all your scan results. Connect your export service to enable this feature.',
+      [{ text: 'OK' }],
+    );
   }, []);
 
   const handleExportPDF = useCallback(async () => {
+    Alert.alert(
+      'Export PDF',
+      'This will generate a PDF report of your results. Connect your export service to enable this feature.',
+      [{ text: 'OK' }],
+    );
+  }, []);
+
+  const handleManageAnswerKeys = useCallback(() => {
+    navigation.navigate('ManageAnswerKeys');
+  }, [navigation]);
+
+  const handleAddAnswerKey = useCallback(async () => {
     try {
-      const resp = await fetch('/api/export/pdf', { method: 'POST' });
-      if (!resp.ok) throw new Error(await resp.text());
-      Alert.alert('PDF ready', 'Your PDF report has been generated.');
-    } catch (err) {
-      console.error('[SettingsScreen] PDF export failed:', err);
-      Alert.alert('Export failed', 'Could not generate the PDF. Please try again.');
+      const fetched = await fetchSections();
+      setSections(fetched);
+      setShowSectionPicker(true);
+    } catch {
+      Alert.alert('Error', 'Could not load sections.');
     }
   }, []);
 
-  const handleManageAnswerKeys = useCallback(async () => {
-    // Navigate to answer-key management screen; replace with real navigation
-    Alert.alert('Answer Keys', 'Opening answer key manager…');
-  }, []);
 
-  const handleAddAnswerKey = useCallback(async () => {
-    // Navigate to add-answer-key screen; replace with real navigation
-    Alert.alert('New Answer Key', 'Opening new answer key form…');
-  }, []);
-
-  const handleClearData = useCallback(() => {
-    Alert.alert('Clear all data', 'This cannot be undone.', [
-      { text: 'Cancel' },
-      {
-        text: 'Clear',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            const resp = await fetch('/api/data', { method: 'DELETE' });
-            if (!resp.ok) throw new Error(await resp.text());
-            Alert.alert('Done', 'All data has been cleared.');
-          } catch (err) {
-            console.error('[SettingsScreen] Clear data failed:', err);
-            Alert.alert('Error', 'Could not clear data. Please try again.');
-          }
-        },
-      },
-    ]);
-  }, []);
 
   // ── Derived flags ─────────────────────────────────────────────────────────
 
@@ -515,16 +500,6 @@ export default function SettingsScreen({ onLogout }: Props) {
               label="Sign out"
               onPress={handleLogout}
               disabled={uiDisabled}
-            />
-            <NavItem
-              iconName="trash-outline"
-              iconBg={Colors.dangerLight}
-              iconColor={Colors.danger}
-              label="Clear all data"
-              labelColor={Colors.danger}
-              chevronColor={Colors.danger}
-              onPress={handleClearData}
-              disabled={uiDisabled}
               isLast
             />
           </SettingGroup>
@@ -536,6 +511,61 @@ export default function SettingsScreen({ onLogout }: Props) {
           <View style={{ height: 80 }} />
         </ScrollView>
       )}
+    {/* Section Picker Modal */}
+      <Modal
+        visible={showSectionPicker}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowSectionPicker(false)}
+      >
+        <View style={pickerStyles.overlay}>
+          <View style={pickerStyles.sheet}>
+            <View style={pickerStyles.header}>
+              <Text style={pickerStyles.title}>Select a Section</Text>
+              <TouchableOpacity onPress={() => setShowSectionPicker(false)}>
+                <Ionicons name="close" size={22} color={Colors.n600} />
+              </TouchableOpacity>
+            </View>
+            <Text style={pickerStyles.sub}>Choose which section to add an answer key for</Text>
+            {sections.length === 0 ? (
+              <View style={pickerStyles.empty}>
+                <Ionicons name="layers-outline" size={36} color={Colors.n300} />
+                <Text style={pickerStyles.emptyText}>No sections found</Text>
+              </View>
+            ) : (
+              <FlatList
+                data={sections}
+                keyExtractor={s => s.id}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={pickerStyles.item}
+                    activeOpacity={0.75}
+                    onPress={() => {
+                      setShowSectionPicker(false);
+                      navigation.navigate('AddAnswerKey', {
+                        sectionId:   item.id,
+                        sectionName: item.name,
+                      });
+                    }}
+                  >
+                    <View style={pickerStyles.itemIcon}>
+                      <Text style={pickerStyles.itemIconText}>
+                        {item.abbr || item.name.slice(0, 2).toUpperCase()}
+                      </Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={pickerStyles.itemName}>{item.name}</Text>
+                      {item.subject ? <Text style={pickerStyles.itemSub}>{item.subject}</Text> : null}
+                    </View>
+                    <Ionicons name="chevron-forward" size={16} color={Colors.n300} />
+                  </TouchableOpacity>
+                )}
+                ItemSeparatorComponent={() => <View style={pickerStyles.divider} />}
+              />
+            )}
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -653,4 +683,19 @@ const styles = StyleSheet.create({
     color: Colors.n400,
     paddingVertical: 20,
   },
+});
+const pickerStyles = StyleSheet.create({
+  overlay:      { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
+  sheet:        { backgroundColor: Colors.white, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: 40, maxHeight: '70%' },
+  header:       { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
+  title:        { fontSize: 17, fontWeight: '700', color: Colors.n900 },
+  sub:          { fontSize: 12, color: Colors.n400, marginBottom: 16 },
+  item:         { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 },
+  itemIcon:     { width: 36, height: 36, borderRadius: 10, backgroundColor: Colors.primaryLight, alignItems: 'center', justifyContent: 'center' },
+  itemIconText: { fontSize: 11, fontWeight: '800', color: Colors.primary },
+  itemName:     { fontSize: 13, fontWeight: '600', color: Colors.n900 },
+  itemSub:      { fontSize: 11, color: Colors.n400, marginTop: 1 },
+  divider:      { height: 1, backgroundColor: Colors.n100 },
+  empty:        { alignItems: 'center', paddingVertical: 40, gap: 10 },
+  emptyText:    { fontSize: 13, color: Colors.n400 },
 });

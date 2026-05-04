@@ -2,6 +2,8 @@
 // Loads REAL scan result passed via navigation params.
 // Falls back gracefully if no data is present.
 // ✅ EDIT MODE: Tap any answer box to manually correct it. Score updates live.
+// ✅ Editable student name AND section field.
+// ✅ Confidence badge removed from scan preview.
 
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -17,9 +19,10 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import type { ScanResult } from '../storage/localStorage';
-import { getScanResultById, updateScanResult } from '../storage/localStorage';
+import { useAuth } from '../context/AuthContext';
+import { getScanResultById, updateScanResult } from '../services/scanService';
 import { Colors, Radius, Spacing } from '../theme';
+import type { ScanResult } from '../types/exam';
 import { gradeAnswers } from '../utils/grading';
 
 // ─── Local UI helpers ──────────────────────────────────────────────────────────
@@ -60,6 +63,8 @@ export default function ReviewScreen() {
   const navigation = useNavigation<any>();
   const route      = useRoute();
   const params     = (route.params as RouteParams) ?? {};
+  const { user }   = useAuth();
+  const userId     = user?.id ?? '';
 
   // Accept result from any param name
   const initialResult = params.inlineResult ?? params.result ?? null;
@@ -69,14 +74,20 @@ export default function ReviewScreen() {
   const [error, setError]     = useState<string | null>(null);
 
   // ── Edit mode state ────────────────────────────────────────
-  // editedAnswers holds the current (possibly corrected) student answers
   const [editedAnswers, setEditedAnswers] = useState<Record<string, string>>(
     initialResult?.studentAnswers ?? {}
   );
   const [editingQuestion, setEditingQuestion] = useState<string | null>(null);
   const [editingValue, setEditingValue]       = useState('');
-  const [editedName, setEditedName]           = useState(initialResult?.studentName ?? '');
-  const [editingName, setEditingName]         = useState(false);
+
+  // Student name
+  const [editedName, setEditedName]   = useState(initialResult?.studentName ?? '');
+  const [editingName, setEditingName] = useState(false);
+
+  // Section — editable, same style as name
+  const [editedSection, setEditedSection]   = useState(initialResult?.sectionId ?? '');
+  const [editingSection, setEditingSection] = useState(false);
+
   const inputRef = useRef<TextInput>(null);
 
   // ── Load from storage if only resultId was passed ─────────
@@ -89,7 +100,7 @@ export default function ReviewScreen() {
     let cancelled = false;
     (async () => {
       try {
-        const r = await getScanResultById(params.resultId!);
+        const r = await getScanResultById(userId, params.resultId!);
         if (cancelled) return;
         if (!r) {
           setError('Scan result not found.');
@@ -97,6 +108,7 @@ export default function ReviewScreen() {
           setResult(r);
           setEditedAnswers(r.studentAnswers ?? {});
           setEditedName(r.studentName ?? '');
+          setEditedSection((r as any).sectionId ?? '');
         }
       } catch (e: any) {
         if (!cancelled) setError(e?.message ?? 'Failed to load result.');
@@ -148,12 +160,11 @@ export default function ReviewScreen() {
   const handleConfirm = useCallback(async () => {
     if (!result) return;
 
-    // Recompute final grade with edited answers
     const finalGrade = gradeAnswers(editedAnswers, result.answerKey, result.examType);
 
-    // Persist corrections to local storage
-    await updateScanResult(result.id, {
-      studentName:    editedName.trim() || result.studentName,
+    await updateScanResult(userId, result.id, {
+      studentName:    editedName.trim()    || result.studentName,
+      sectionId:      editedSection.trim() || (result as any).sectionId,
       studentAnswers: editedAnswers,
       score:          finalGrade.score,
       total:          finalGrade.total,
@@ -161,8 +172,8 @@ export default function ReviewScreen() {
       passed:         finalGrade.passed ?? (finalGrade.percentage >= 50),
     });
 
-    navigation.navigate('Results', { resultId: result.id });
-  }, [result, editedAnswers, editedName, navigation]);
+    navigation.navigate('MainTabs', { screen: 'Results', params: { resultId: result.id } });
+  }, [result, editedAnswers, editedName, editedSection, navigation]);
 
   const handleRescan = useCallback(() => {
     Alert.alert(
@@ -262,27 +273,6 @@ export default function ReviewScreen() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* Scan quality indicator */}
-        <View style={styles.imgPreview}>
-          <View style={styles.imgLines}>
-            {[1, 0.78, 0.55, 1, 0.78, 0.55].map((w, i) => (
-              <View key={i} style={[styles.imgLine, { width: `${w * 70}%` as any }]} />
-            ))}
-          </View>
-          <View
-            style={[
-              styles.qualityBadge,
-              { backgroundColor: hasLowConf ? Colors.amber : Colors.success },
-            ]}
-          >
-            <Text style={styles.qualityText}>
-              {hasLowConf
-                ? `⚠ ${Math.round((result.ocrConfidence ?? 0) * 100)}% confidence`
-                : '✓ Good quality'}
-            </Text>
-          </View>
-        </View>
-
         {/* Student name — tappable to edit */}
         <TouchableOpacity
           style={[styles.ocrField, editingName && styles.ocrFieldActive]}
@@ -304,19 +294,44 @@ export default function ReviewScreen() {
               onSubmitEditing={() => setEditingName(false)}
               placeholder="Enter student name…"
               placeholderTextColor="#94A3B8"
+              autoCapitalize="words"
             />
           ) : (
             <Text style={styles.ocrValue}>{editedName || 'Unknown — tap to edit'}</Text>
           )}
         </TouchableOpacity>
 
-        {result.sectionId && (
-          <View style={styles.ocrField}>
+        {/* Section — tappable to edit (same style as name) */}
+        <TouchableOpacity
+          style={[styles.ocrField, editingSection && styles.ocrFieldActive]}
+          onPress={() => setEditingSection(true)}
+          activeOpacity={0.75}
+        >
+          <View style={styles.ocrFieldRow}>
             <Text style={styles.ocrLabel}>Section</Text>
-            <Text style={styles.ocrValue}>{result.sectionId}</Text>
+            <Ionicons name="pencil-outline" size={10} color={Colors.textMuted} />
           </View>
-        )}
+          {editingSection ? (
+            <TextInput
+              style={styles.ocrValueInput}
+              value={editedSection}
+              onChangeText={setEditedSection}
+              autoFocus
+              onBlur={() => setEditingSection(false)}
+              returnKeyType="done"
+              onSubmitEditing={() => setEditingSection(false)}
+              placeholder="Enter section (e.g. BSI, Section Rizal)…"
+              placeholderTextColor="#94A3B8"
+              autoCapitalize="characters"
+            />
+          ) : (
+            <Text style={styles.ocrValue}>
+              {editedSection || 'No section — tap to add'}
+            </Text>
+          )}
+        </TouchableOpacity>
 
+        {/* Exam type — read only */}
         <View style={styles.ocrField}>
           <Text style={styles.ocrLabel}>Exam type</Text>
           <Text style={styles.ocrValue}>{result.examType.replace(/_/g, ' ')}</Text>
@@ -380,7 +395,6 @@ export default function ReviewScreen() {
                   >
                     {displayAnswer}
                   </Text>
-                  {/* Small edit pencil icon */}
                   <Ionicons
                     name="pencil"
                     size={7}
@@ -485,30 +499,6 @@ const styles = StyleSheet.create({
 
   scroll:  { flex: 1 },
   content: { padding: Spacing.lg, gap: 10 },
-
-  // ── Scan preview ──
-  imgPreview: {
-    height: 90,
-    backgroundColor: '#F1F5F9',
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    alignItems: 'center',
-    justifyContent: 'center',
-    position: 'relative',
-    overflow: 'hidden',
-  },
-  imgLines: { width: '70%', gap: 6 },
-  imgLine:  { height: 3, backgroundColor: '#CBD5E1', borderRadius: 2 },
-  qualityBadge: {
-    position: 'absolute',
-    top: 6,
-    right: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: Radius.full,
-  },
-  qualityText: { fontSize: 8, fontWeight: '700', color: '#fff' },
 
   // ── OCR fields ──
   ocrField: {

@@ -26,7 +26,7 @@
     "src/**/*",
     "app.config.ts",
     "supabase.ts"
-  ],
+, "src/screens/.AddAnswerKeyScreen.tsx"  ],
   "exclude": [
     "node_modules",
     "backend"

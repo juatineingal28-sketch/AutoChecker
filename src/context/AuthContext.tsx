@@ -1,10 +1,8 @@
 // src/context/AuthContext.tsx
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { supabase } from '../../supabase';
 import { migrateLegacyScanData } from '../services/scanService';
-
-// ── SplashScreen import removed — splash now lives in App.tsx only ──────────
 
 interface User {
   id: string;
@@ -21,6 +19,7 @@ interface AuthContextType {
   logout: () => Promise<void>;
   isAuthenticated: boolean;
   isPasswordRecovery: boolean;
+  setRecoveryMode: (val: boolean) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -28,11 +27,15 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [user, setUser]                       = useState<User | null>(null);
+  const [loading, setLoading]                 = useState(true);
   const [isPasswordRecovery, setIsPasswordRecovery] = useState(false);
 
-  // ── showSplash state removed ─────────────────────────────────────────────
+  // ── Use a ref to track recovery state inside the auth listener.
+  // useState is async — the closure inside onAuthStateChange would read
+  // a stale false value even after setIsPasswordRecovery(true) was called.
+  // The ref is always current.
+  const recoveryRef = useRef(false);
 
   const fetchProfile = async (id: string, email: string): Promise<User> => {
     try {
@@ -70,21 +73,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         setUser(null);
       }
       setLoading(false);
-      // ── setTimeout/setShowSplash removed ────────────────────────────────
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
+
+        // ── PASSWORD_RECOVERY ────────────────────────────────────────────────
+        // Fired when the user opens the app via a magic link reset email.
         if (event === 'PASSWORD_RECOVERY') {
+          recoveryRef.current = true;
           setIsPasswordRecovery(true);
           setLoading(false);
-          return;
+          return; // Do NOT set user — stay on login screen
         }
 
+        // ── SIGNED_IN ────────────────────────────────────────────────────────
+        // Fired by verifyOtp({ type: 'recovery' }) from ForgotPasswordModal.
+        // PASSWORD_RECOVERY always fires before SIGNED_IN in the recovery flow,
+        // so recoveryRef.current will already be true here — block the redirect.
+        if (event === 'SIGNED_IN' && recoveryRef.current) {
+          setLoading(false);
+          return; // Still in recovery — do NOT set user
+        }
+
+        // ── USER_UPDATED ─────────────────────────────────────────────────────
+        // Fired after updateUser({ password }) completes.
+        // Recovery is done — clear the flag. signOut() follows immediately
+        // in the modal so user will be set to null on the SIGNED_OUT event.
         if (event === 'USER_UPDATED') {
+          recoveryRef.current = false;
           setIsPasswordRecovery(false);
         }
 
+        // ── Normal session handling ──────────────────────────────────────────
         if (session?.user) {
           const profile = await fetchProfile(
             session.user.id,
@@ -131,10 +152,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     } catch {}
     await supabase.auth.signOut();
     setUser(null);
+    recoveryRef.current = false;
     setIsPasswordRecovery(false);
   };
-
-  // ── if (showSplash) return <SplashScreen /> removed ──────────────────────
 
   return (
     <AuthContext.Provider
@@ -146,6 +166,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         logout,
         isAuthenticated: !!user,
         isPasswordRecovery,
+        setRecoveryMode: (val: boolean) => {
+          recoveryRef.current = val;
+          setIsPasswordRecovery(val);
+        },
       }}
     >
       {children}

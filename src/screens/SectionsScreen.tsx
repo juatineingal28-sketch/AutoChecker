@@ -480,8 +480,9 @@ export default function SectionsScreen() {
   const [loadError,    setLoadError]    = useState(false); // ✅ NEW: track error silently
   const [search,       setSearch]       = useState('');
   const [activeFilter, setActiveFilter] = useState('All');
-  const [uploading,    setUploading]    = useState<string | null>(null);
-  const [showCreate,   setShowCreate]   = useState(false);
+  const [uploading,     setUploading]     = useState<string | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<Record<string, string>>({});
+  const [showCreate,    setShowCreate]    = useState(false);
 
   // ── Section management state ────────────────────────────────────────────────
   const [archivedIds,    setArchivedIds]    = useState<Set<string>>(new Set());
@@ -539,15 +540,22 @@ export default function SectionsScreen() {
         copyToCacheDirectory: true,
       });
 
-      if (result.canceled || !result.assets?.length) return;
+      if (result.canceled || !result.assets?.length) {
+        setUploading(null);
+        return;
+      }
 
       const file = result.assets[0];
       const ext  = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
 
       if (!ACCEPTED_EXTENSIONS.includes(ext)) {
         Alert.alert('Unsupported File', `Please upload one of: ${ACCEPTED_EXTENSIONS.join(', ')}`);
+        setUploading(null);
         return;
       }
+
+      // ── Show selected file name immediately after picking ──────────────────
+      setSelectedFiles(prev => ({ ...prev, [sectionId]: file.name }));
 
       const record = await uploadAnswerKey(
         sectionId,
@@ -568,6 +576,8 @@ export default function SectionsScreen() {
         `"${file.name}"\n${record.total} items loaded\n\n${typeLines}`,
       );
     } catch (err: any) {
+      // Clear the pending file name on failure so the button doesn't show stale state
+      setSelectedFiles(prev => { const next = { ...prev }; delete next[sectionId]; return next; });
       const msg = err.response?.data?.error ?? err.message ?? 'Upload failed. Check your server connection.';
       Alert.alert('Upload Error', msg);
     } finally {
@@ -663,7 +673,10 @@ export default function SectionsScreen() {
         'Upload an answer key first to enable auto-grading.',
         [
           { text: 'Cancel', style: 'cancel' },
-          { text: 'Upload Key',  onPress: () => handleUpload(sectionId) },
+          { text: 'Add Key', onPress: () => navigation.navigate('AddAnswerKey', {
+              sectionId,
+              sectionName: sections.find(s => s.id === sectionId)?.name ?? '',
+            }) },
           { text: 'Scan Anyway', onPress: () => navigation.navigate('Scan', { sectionId }) },
         ],
       );
@@ -799,6 +812,8 @@ export default function SectionsScreen() {
 
               {/* Actions */}
               <View style={styles.actionRow}>
+
+                {/* ── Upload File ─────────────────────────────────────────── */}
                 <TouchableOpacity
                   style={styles.btnUpload}
                   onPress={() => handleUpload(section.id)}
@@ -806,13 +821,39 @@ export default function SectionsScreen() {
                   activeOpacity={0.75}
                 >
                   <Ionicons name="cloud-upload-outline" size={13} color={Colors.primary} />
-                  <Text style={styles.btnUploadText}>
-                    {uploading === section.id
-                      ? 'Uploading…'
-                      : hasKey ? 'Replace Key' : '+ Upload Answer Key'}
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.btnUploadText} numberOfLines={1}>
+                      {uploading === section.id ? 'Uploading…' : 'Upload File'}
+                    </Text>
+                    {selectedFiles[section.id] && uploading !== section.id && (
+                      <Text style={styles.btnUploadFileName} numberOfLines={1}>
+                        {selectedFiles[section.id]}
+                      </Text>
+                    )}
+                  </View>
+                </TouchableOpacity>
+
+                {/* ── Add Answer Key ───────────────────────────────────────── */}
+                <TouchableOpacity
+                  style={styles.btnAnswerKey}
+                  onPress={() =>
+                    navigation.navigate('AddAnswerKey', {
+                      sectionId:   section.id,
+                      sectionName: section.name,
+                    })
+                  }
+                  activeOpacity={0.75}
+                >
+                  <Ionicons name="key-outline" size={13} color="#fff" />
+                  <Text style={styles.btnAnswerKeyText} numberOfLines={1}>
+                    {hasKey ? 'Edit Key' : 'Add Key'}
                   </Text>
                 </TouchableOpacity>
 
+              </View>
+
+              {/* Scan row */}
+              <View style={styles.scanRow}>
                 <TouchableOpacity
                   style={[styles.btnScan, !hasKey && styles.btnScanDim]}
                   onPress={() => handleScan(section.id, hasKey)}
@@ -824,8 +865,6 @@ export default function SectionsScreen() {
                   </Text>
                 </TouchableOpacity>
               </View>
-
-              {/* Section management row */}
               <View style={styles.mgmtRow}>
                 <TouchableOpacity
                   style={styles.mgmtBtn}
@@ -868,7 +907,7 @@ export default function SectionsScreen() {
         <View style={styles.formatNote}>
           <Ionicons name="information-circle-outline" size={12} color={Colors.n400} />
           <Text style={styles.formatNoteText}>
-            Accepted formats: .json · .txt · .pdf · .docx
+            Accepted upload formats: .csv · .xlsx · .pdf · .txt
           </Text>
         </View>
 
@@ -978,14 +1017,26 @@ const styles = StyleSheet.create({
 
   btnUpload: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 5, paddingVertical: 9, borderRadius: Radius.sm,
+    gap: 5, paddingVertical: 9, paddingHorizontal: 8, borderRadius: Radius.sm,
     borderWidth: 1, borderColor: Colors.primary, backgroundColor: Colors.primaryLight,
   },
-  btnUploadText: { fontSize: 11, fontWeight: '600', color: Colors.primary },
+  btnUploadText:     { fontSize: 11, fontWeight: '600', color: Colors.primary },
+  btnUploadFileName: { fontSize: 9, color: Colors.primary, opacity: 0.75, marginTop: 1 },
+
+  btnAnswerKey: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 5, paddingVertical: 9, paddingHorizontal: 8, borderRadius: Radius.sm,
+    backgroundColor: Colors.primary,
+  },
+  btnAnswerKeyText: { fontSize: 11, fontWeight: '600', color: '#fff' },
+
+  scanRow: {
+    paddingHorizontal: 12, paddingBottom: 10, paddingTop: 0,
+  },
 
   btnScan: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 5, paddingVertical: 9, borderRadius: Radius.sm, backgroundColor: Colors.primary,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 5, paddingVertical: 8, borderRadius: Radius.sm, backgroundColor: Colors.primary,
   },
   btnScanDim:  { backgroundColor: Colors.n100, borderWidth: 1, borderColor: Colors.n200 },
   btnScanText: { fontSize: 11, fontWeight: '600', color: '#fff' },
