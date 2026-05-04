@@ -43,7 +43,7 @@ const cors      = require('cors');
 const fs        = require('fs');
 const path      = require('path');
 const pdfParseModule = require('pdf-parse');
-const pdfParse = pdfParseModule.default || pdfParseModule;
+const pdfParse = pdfParseModule.default || pdfParseModule || pdfParseModule.default?.default;
 const mammoth   = require('mammoth');
 const Tesseract = require('tesseract.js');
 
