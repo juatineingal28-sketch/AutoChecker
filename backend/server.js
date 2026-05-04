@@ -42,7 +42,8 @@ const multer    = require('multer');
 const cors      = require('cors');
 const fs        = require('fs');
 const path      = require('path');
-const pdfParse = require('pdf-parse');
+const _pdfParseLib = require('pdf-parse');
+const pdfParse = typeof _pdfParseLib === 'function' ? _pdfParseLib : _pdfParseLib.default;
 const mammoth   = require('mammoth');
 const Tesseract = require('tesseract.js');
 
