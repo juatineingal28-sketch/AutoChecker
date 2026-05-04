@@ -1108,7 +1108,7 @@ app.get('/health', (_req, res) => res.json({
   status: 'ok',
   sharp:  !!sharp,
   ocr:    'tesseract.js',
-  version: '2.0-handwriting',
+  version: '2.1-smartparser',
 }));
 
 // Error handler
