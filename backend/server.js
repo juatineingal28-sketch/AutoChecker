@@ -210,11 +210,33 @@ async function parseUploadedFile(filePath, ext) {
     return items.length ? { items } : { error: 'No valid answer lines found in PDF.' };
   }
   if (ext === '.docx' || ext === '.doc') {
-    const result    = await mammoth.extractRawText({ path: filePath });
-    const fixedText = result.value.replace(/([^\n])(\d{1,3}[.):][\t ])/g, '$1\n$2');
-    const items     = parseTextLines(fixedText);
+    const result = await mammoth.extractRawText({ path: filePath });
+    let text = result.value;
+
+    // ── Normalize line endings ─────────────────────────────────────────────
+    text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+    // ── Split merged lines: insert newline before any question number
+    //    that is not already at the start of a line.
+    //    Handles all separator styles: "1. A 2. B" "1) A 2) B" "1: A 2: B"
+    //    and also tab-separated or space-separated entries.
+    text = text
+      .replace(/([^\n])(\s+\d{1,3}\s*[.):\-][\t ]+)/g, '$1\n$2')  // space/tab separated
+      .replace(/([^\n])(\d{1,3}[.):][\t ])/g, '$1\n$2');            // no leading space
+
+    // ── Remove blank lines and normalize whitespace ────────────────────────
+    text = text.replace(/\n{2,}/g, '\n');
+
+    const items = parseTextLines(text);
+
+    // ── Debug: log what mammoth extracted so you can diagnose format issues
+    console.log(`[AutoChecker] DOCX extracted ${text.split('\n').length} lines, parsed ${items.length} items`);
+    if (items.length === 0) {
+      console.log('[AutoChecker] DOCX raw text sample:\n' + text.slice(0, 500));
+    }
+
     return items.length ? { items } : {
-      error: 'No valid answer lines found. Format:\n1. A\n2. True\n3. [type:enumeration] oxygen, carbon',
+      error: 'No valid answer lines found in DOCX.\n\nSupported formats:\n  1. A\n  2. B\n  1) True\n  2) False\n  1: photosynthesis\n  [type:enumeration] oxygen, carbon',
     };
   }
   return { error: `Unsupported extension: ${ext}` };
