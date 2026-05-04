@@ -186,8 +186,17 @@ export async function uploadAnswerKey(
 }
 
 /**
- * FIXED VERSION
- * Buffer removed completely — uses Blob instead (React Native / Expo safe)
+ * FIXED VERSION — React Native / Expo safe
+ *
+ * Why no Blob:
+ *   RN's Blob type (globals.d.ts) requires `lastModified` in BlobOptions
+ *   and FormData.append only accepts 2 arguments, so the web overload
+ *   `append(name, blob, filename)` does not exist in RN typings.
+ *
+ * Solution:
+ *   Use a `data:` URI with the {uri, name, type} object that RN's own
+ *   FormData implementation natively understands. The fetch polyfill
+ *   reads the data URI directly — no filesystem access needed.
  */
 export async function uploadAnswerKeyJson(
   sectionId: string,
@@ -195,15 +204,14 @@ export async function uploadAnswerKeyJson(
 ): Promise<AnswerKeyRecord> {
   const json = JSON.stringify(items, null, 2);
 
-  const blob = new Blob([json], {
-    type: 'application/json',
-    lastModified: Date.now(),
-  } as BlobOptions);
-
   const formData = new FormData();
 
+  // RN FormData accepts the {uri, name, type} shape as the second argument.
+  // Use a data URI built with encodeURIComponent — no btoa, no Buffer needed.
+  const dataUri = `data:application/json,${encodeURIComponent(json)}`;
+
   formData.append('file', {
-    uri: URL.createObjectURL(blob),
+    uri:  dataUri,
     name: 'answer_key.json',
     type: 'application/json',
   } as any);
@@ -212,7 +220,9 @@ export async function uploadAnswerKeyJson(
     `${BASE_URL}/api/answer-key/${sectionId}`,
     {
       method: 'POST',
-      body: formData,
+      body:   formData,
+      // Do NOT set Content-Type manually — RN fetch sets it automatically
+      // with the correct multipart boundary when body is FormData.
     }
   );
 
