@@ -732,7 +732,7 @@ app.post('/api/answer-key/:sectionId', upload.single('file'), async (req, res) =
       uploadedAt: record.uploadedAt, total: record.key.length, typeSummary: typeSummary(record.key), key: record.key });
   } catch (err) {
     console.error('Upload error:', err);
-    res.status(500).json({ success: false, error: 'Server error during upload.' });
+    res.status(500).json({ success: false, error: `Upload failed: ${err.message}` });
   } finally {
     if (tempPath && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
   }
