@@ -1,27 +1,13 @@
 ﻿// src/services/scanService.ts
 // ─────────────────────────────────────────────────────────────────────────────
-// FIX: Data isolation per teacher account.
+// CHANGES FROM PREVIOUS VERSION:
+//  ✅ EXAM_TYPE_DISPLAY now uses correct ExamType keys (bubble_omr, multiple_choice)
+//  ✅ Legacy keys (bubble_mc, text_mc, trace_error, short_answer) removed
+//  ✅ scanExamSheet() status message uses correct 'bubble_omr' key
+//  ✅ All types use ExamType from exam.ts
 //
-// ROOT CAUSE OF DATA LEAK:
-//   Previously, getScanResults() / saveScanResult() used a single global
-//   AsyncStorage key (e.g. "scan_results"). Every teacher account read from
-//   and wrote to the exact same bucket.
-//
-// FIX:
-//   Every storage operation is now keyed by the authenticated user's ID:
-//     "scan_results:{userId}"
-//
-//   This means Teacher A's scans are physically stored under a different key
-//   than Teacher B's, so there is zero cross-account data visibility.
-//
-//   HOW TO WIRE UP:
-//     Pass the userId string from your AuthContext into every function that
-//     reads or writes scan records. Example in ScanTab:
-//
-//       const { user } = useAuth();
-//       const enriched = await saveEnrichedScanResult(result, meta, user!.id);
-//       const all      = await getAllEnrichedResults(user!.id);
-//
+// Data isolation per teacher account — all storage keyed by userId.
+// See original file comment for full explanation.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -34,16 +20,12 @@ import { supabase } from './supabaseScans';
 
 // ─── Storage key helpers ──────────────────────────────────────────────────────
 
-/**
- * Returns the AsyncStorage key that belongs exclusively to this user.
- * NEVER use a bare key like "scan_results" — always call this.
- */
 function scanKey(userId: string): string {
   if (!userId) throw new Error('[scanService] userId is required — user may not be authenticated.');
   return `scan_results:${userId}`;
 }
 
-// ─── Low-level read / write (now user-scoped) ─────────────────────────────────
+// ─── Low-level read / write ───────────────────────────────────────────────────
 
 async function readScanResults(userId: string): Promise<ScanResult[]> {
   const raw = await AsyncStorage.getItem(scanKey(userId));
@@ -61,23 +43,11 @@ async function writeScanResults(userId: string, results: ScanResult[]): Promise<
 
 // ─── Legacy data migration ────────────────────────────────────────────────────
 
-/**
- * ONE-TIME migration: if data was saved before the userId-scoping fix it lives
- * under the bare key "scan_results".  On first login we move it into the
- * user-scoped key so the teacher doesn't lose their history, then delete the
- * global key so no other account can ever read it.
- *
- * Call this right after the user is confirmed authenticated (e.g. in AuthContext
- * after fetchProfile resolves, or at the top of HomeTab's loadData).
- *
- * It is safe to call on every login — after the first run the legacy key is
- * gone and this becomes a no-op.
- */
 export async function migrateLegacyScanData(userId: string): Promise<void> {
   const LEGACY_KEY = 'scan_results';
   try {
     const raw = await AsyncStorage.getItem(LEGACY_KEY);
-    if (!raw) return; // nothing to migrate
+    if (!raw) return;
 
     const legacy = JSON.parse(raw) as ScanResult[];
     if (!Array.isArray(legacy) || legacy.length === 0) {
@@ -85,28 +55,25 @@ export async function migrateLegacyScanData(userId: string): Promise<void> {
       return;
     }
 
-    // Merge into user-scoped store (avoid duplicates by id)
-    const existing = await readScanResults(userId);
+    const existing    = await readScanResults(userId);
     const existingIds = new Set(existing.map(r => r.id));
-    const toAdd = legacy.filter(r => !existingIds.has(r.id));
+    const toAdd       = legacy.filter(r => !existingIds.has(r.id));
+
     if (toAdd.length > 0) {
       await writeScanResults(userId, [...toAdd, ...existing]);
     }
 
-    // Delete the global key — no other account must ever see this data
     await AsyncStorage.removeItem(LEGACY_KEY);
   } catch {
-    // Non-fatal — migration failure must never block the user from logging in
+    // Non-fatal
   }
 }
 
+// ─── CRUD ─────────────────────────────────────────────────────────────────────
 
-
-/** Saves one scan result under the authenticated user's key. */
 export async function saveScanResult(userId: string, result: ScanResult): Promise<void> {
   const existing = await readScanResults(userId);
-  // Replace if already present (re-save after edits), otherwise prepend.
-  const idx = existing.findIndex(r => r.id === result.id);
+  const idx      = existing.findIndex(r => r.id === result.id);
   if (idx >= 0) {
     existing[idx] = result;
   } else {
@@ -115,43 +82,39 @@ export async function saveScanResult(userId: string, result: ScanResult): Promis
   await writeScanResults(userId, existing);
 }
 
-/** Returns all scan results for this user, newest first. */
 export async function getScanResults(userId: string): Promise<ScanResult[]> {
   return readScanResults(userId);
 }
 
-/** Returns a single scan result by ID for this user, or null. */
 export async function getScanResultById(userId: string, id: string): Promise<ScanResult | null> {
   const all = await readScanResults(userId);
   return all.find(r => r.id === id) ?? null;
 }
 
-/** Deletes a single scan result for this user. */
 export async function deleteScanResult(userId: string, id: string): Promise<void> {
   const existing = await readScanResults(userId);
   await writeScanResults(userId, existing.filter(r => r.id !== id));
 }
 
-/** Patches fields on an existing scan result for this user. */
 export async function updateScanResult(
   userId: string,
-  id: string,
-  patch: Partial<ScanResult>,
+  id:     string,
+  patch:  Partial<ScanResult>,
 ): Promise<void> {
   const existing = await readScanResults(userId);
-  const idx = existing.findIndex(r => r.id === id);
+  const idx      = existing.findIndex(r => r.id === id);
   if (idx >= 0) {
     existing[idx] = { ...existing[idx], ...patch };
     await writeScanResults(userId, existing);
   }
 }
 
-// ─── Existing types ───────────────────────────────────────────────────────────
+// ─── Scan types ───────────────────────────────────────────────────────────────
 
 type MimeType = 'image/jpeg' | 'image/png' | 'image/webp' | 'application/pdf';
 
 export interface ScanInput {
-  uri: string;
+  uri:            string;
   fileExtension?: string;
 }
 
@@ -178,14 +141,15 @@ export type EnrichedScanResult = ScanResult & {
 };
 
 // ─── Exam-type display labels ─────────────────────────────────────────────────
+//
+// FIXED: now uses correct ExamType keys. Legacy keys removed.
 
-const EXAM_TYPE_DISPLAY: Record<string, string> = {
-  bubble_mc:      'Bubble OMR',
-  text_mc:        'Multiple Choice',
-  identification: 'Identification',
-  enumeration:    'Enumeration',
-  trace_error:    'Trace the Error',
-  short_answer:   'Short Answer',
+const EXAM_TYPE_DISPLAY: Record<ExamType, string> = {
+  bubble_omr:      'Bubble OMR',
+  multiple_choice: 'Multiple Choice',
+  identification:  'Identification',
+  enumeration:     'Enumeration',
+  true_or_false:   'True or False',
 };
 
 // ─── Status derivation ────────────────────────────────────────────────────────
@@ -203,25 +167,10 @@ export function deriveStatus(
 
 // ─── Enriched save ────────────────────────────────────────────────────────────
 
-/**
- * Saves a scan result enriched with section / student / key metadata.
- * NOW REQUIRES userId so the record is stored under the correct account.
- *
- * Usage in ScanTab:
- * ```ts
- * const { user } = useAuth();
- * const enriched = await saveEnrichedScanResult(processedResult, {
- *   section:       currentSection.name,
- *   studentId:     studentIdInput.trim(),
- *   answerKeyUsed: activeAnswerKeyLabel,
- * }, user!.id);
- * navigation.navigate('Results', { result: enriched });
- * ```
- */
 export async function saveEnrichedScanResult(
   base:   ScanResult,
   meta:   ScanMeta,
-  userId: string,           // ← NEW required param
+  userId: string,
 ): Promise<EnrichedScanResult> {
   const ocrConfidence = (base as any).ocrConfidence ?? 1;
 
@@ -232,7 +181,7 @@ export async function saveEnrichedScanResult(
     answerKeyUsed: meta.answerKeyUsed,
     status:        deriveStatus(base.percentage, ocrConfidence),
     scannedAt:     (base as any).scannedAt ?? new Date().toISOString(),
-    examTypeLabel: EXAM_TYPE_DISPLAY[base.examType as string] ?? String(base.examType),
+    examTypeLabel: EXAM_TYPE_DISPLAY[base.examType] ?? String(base.examType),
   };
 
   await saveScanResult(userId, enriched as unknown as ScanResult);
@@ -242,18 +191,9 @@ export async function saveEnrichedScanResult(
 
 // ─── Enriched read helpers ────────────────────────────────────────────────────
 
-/**
- * Returns every stored record for THIS USER cast to EnrichedScanResult,
- * newest first.
- *
- * BEFORE (leaking):  const raw = await getScanResults();  // global key!
- * AFTER  (safe):     const raw = await getAllEnrichedResults(user.id);
- */
 export async function getAllEnrichedResults(userId: string): Promise<EnrichedScanResult[]> {
   const raw = await readScanResults(userId);
 
-  // ── Filter out results whose section has been deleted from Supabase ──────
-  // Fetch all section IDs that still exist for this user.
   let validSectionIds: Set<string> | null = null;
   try {
     const { data: sections } = await supabase
@@ -264,13 +204,12 @@ export async function getAllEnrichedResults(userId: string): Promise<EnrichedSca
       validSectionIds = new Set(sections.map((s: any) => s.id));
     }
   } catch {
-    // If Supabase is unreachable, skip filtering — show all results.
+    // Supabase unreachable — show all results
   }
 
   const filtered = validSectionIds
     ? raw.filter(r => {
         const sid = (r as any).sectionId ?? (r as any).section_id;
-        // Keep results that have no sectionId OR whose sectionId still exists
         if (!sid) return true;
         return validSectionIds!.has(sid);
       })
@@ -283,7 +222,7 @@ export async function getAllEnrichedResults(userId: string): Promise<EnrichedSca
     answerKeyUsed: (r as any).answerKeyUsed ?? '',
     status:        (r as any).status        ?? deriveStatus(r.percentage, (r as any).ocrConfidence ?? 1),
     scannedAt:     (r as any).scannedAt     ?? new Date().toISOString(),
-    examTypeLabel: EXAM_TYPE_DISPLAY[r.examType as string] ?? String(r.examType),
+    examTypeLabel: EXAM_TYPE_DISPLAY[r.examType] ?? String(r.examType),
   }));
 
   return enriched.sort(
@@ -291,9 +230,6 @@ export async function getAllEnrichedResults(userId: string): Promise<EnrichedSca
   );
 }
 
-/**
- * Returns enriched results filtered to a single section for THIS USER.
- */
 export async function getEnrichedResultsBySection(
   userId:      string,
   sectionName: string,
@@ -302,9 +238,7 @@ export async function getEnrichedResultsBySection(
   return all.filter(r => r.section === sectionName);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Existing OCR API logic — unchanged
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── OCR scan API ─────────────────────────────────────────────────────────────
 
 const EXT_MIME_MAP: Record<string, MimeType> = {
   jpg:  'image/jpeg',
@@ -315,7 +249,7 @@ const EXT_MIME_MAP: Record<string, MimeType> = {
 };
 
 async function fileToBase64(
-  uri: string,
+  uri:            string,
   fileExtension?: string,
 ): Promise<{ base64: string; mimeType: MimeType }> {
   const ext      = (fileExtension ?? uri.split('.').pop() ?? 'jpg').toLowerCase();
@@ -331,8 +265,8 @@ function validateImageSize(base64: string): void {
 }
 
 export async function scanExamSheet(
-  input: ScanInput,
-  options: ScanOptions,
+  input:     ScanInput,
+  options:   ScanOptions,
   onStatus?: (msg: string) => void,
 ): Promise<ParsedScanPayload> {
   const { examType, questionCount } = options;
@@ -342,7 +276,12 @@ export async function scanExamSheet(
   const { base64, mimeType } = await fileToBase64(input.uri, input.fileExtension);
   validateImageSize(base64);
 
-  onStatus?.(examType === 'bubble_mc' ? 'Detecting shaded bubbles...' : 'Extracting written answers...');
+  // FIXED: was 'bubble_mc', now correctly checks 'bubble_omr'
+  onStatus?.(
+    examType === 'bubble_omr'
+      ? 'Detecting shaded bubbles...'
+      : 'Extracting written answers...'
+  );
 
   const response = await fetch(`${BASE_URL}/api/scan`, {
     method:  'POST',
@@ -359,9 +298,23 @@ export async function scanExamSheet(
   if (!data.success) throw new Error(data.error ?? 'Scan failed. Please try again.');
 
   onStatus?.('Parsing results...');
-  return parseOcrPayload(
-    { answers: data.answers, studentName: data.studentName, confidence: data.confidence, notes: data.notes },
+  const parsed = parseOcrPayload(
+    {
+      answers:     data.answers,
+      studentName: data.studentName,
+      confidence:  data.confidence,
+      notes:       data.notes,
+    },
     examType,
     questionCount,
   );
+
+  // Map ParsedScanPayload -> ScanPayloadExtended shape that ScanTab expects
+  return {
+    success:     true,
+    answers:     parsed.studentAnswers,
+    studentName: parsed.detectedStudentName ?? undefined,
+    confidence:  parsed.ocrConfidence,
+    notes:       parsed.ocrNotes,
+  } as any;
 }
