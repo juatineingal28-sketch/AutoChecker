@@ -44,10 +44,7 @@ import { useAuth } from '../context/AuthContext';
 import { fetchAnswerKey as fetchAnswerKeyFromApi, type AnswerKeyItem } from '../services/api';
 import { DEFAULT_SETTINGS, getUserSettings, type UserSettings } from '../services/settingsService';
 // ── Service imports ──────────────────────────────────────────────────────────
-// scanApi.ts exports `scanExamSheet` (not `scanImage`)
-import { scanExamSheet } from '../services/scanApi';
-// supabaseScans.ts exports only the `supabase` client — no saveScanToSupabase
-import { saveScanResult } from '../services/scanService';
+import { saveScanResult, scanExamSheet } from '../services/scanService';
 import { supabase } from '../services/supabaseScans';
 import { buildScanResult, gradeAnswers } from '../utils/grading';
 
@@ -102,34 +99,31 @@ const GRAY_DIM  = 'rgba(255,255,255,0.12)';
 const FRAME_W = SCREEN_W * 0.96;
 const FRAME_H = FRAME_W * 1.55;
 
-const EXAM_TYPE_LABELS: Record<ExamType, string> = {
-  bubble_mc:      '⬤  Bubble OMR',
-  text_mc:        '①  Text MC',
-  identification: '📝  Identification',
-  enumeration:    '📋  Enumeration',
-  trace_error:    '🔍  Trace Error',
-  true_false:     '☑️  True or False',
-};
+const EXAM_TYPE_LABELS: Record<string, string> = {
+  bubble_omr:      '⬤  Bubble OMR',
+  multiple_choice: '①  Multiple Choice',
+  identification:  '📝  Identification',
+  enumeration:     '📋  Enumeration',
+  true_or_false:   '✓✗  True or False',
+} satisfies Partial<Record<ExamType, string>>;
 
-const EXAM_TYPE_SHORT: Record<ExamType, string> = {
-  bubble_mc:      'Bubble OMR',
-  text_mc:        'Text MC',
-  identification: 'ID',
-  enumeration:    'Enum',
-  trace_error:    'Error',
-  true_false:     'T/F',
-};
+const EXAM_TYPE_SHORT: Record<string, string> = {
+  bubble_omr:      'Bubble OMR',
+  multiple_choice: 'MC',
+  identification:  'ID',
+  enumeration:     'Enum',
+  true_or_false:   'T/F',
+} satisfies Partial<Record<ExamType, string>>;
 
 // ─── Exam-type validation ─────────────────────────────────────────────────────
 
-const EXAM_TYPE_HINTS: Record<ExamType, string> = {
-  bubble_mc:      'filled bubble circles (OMR sheet)',
-  text_mc:        'letter choices written in boxes or blanks (A / B / C / D)',
-  identification: 'written words or phrases as answers',
-  enumeration:    'a numbered list of written items',
-  trace_error:    'code or text with errors to be marked',
-  true_false:     'True or False written (or T / F) for each item',
-};
+const EXAM_TYPE_HINTS: Record<string, string> = {
+  bubble_omr:      'filled bubble circles (OMR sheet)',
+  multiple_choice: 'letter choices written in boxes or blanks (A / B / C / D)',
+  identification:  'written words or phrases as answers',
+  enumeration:     'a numbered list of written items',
+  true_or_false:   'True or False written answers (T / F or True / False)',
+} satisfies Partial<Record<ExamType, string>>;
 
 function validateAnswersMatchType(
   answers: Record<string, string>,
@@ -144,7 +138,7 @@ function validateAnswersMatchType(
   const singleLetterRatio = singleLetterCount / values.length;
   const avgLength = values.reduce((s, v) => s + v.trim().length, 0) / values.length;
 
-  if (examType === 'bubble_mc' || examType === 'text_mc') {
+  if (examType === 'multiple_choice' || examType === 'bubble_omr') {
     if (singleLetterRatio < 0.3) {
       return {
         valid: false,
@@ -168,10 +162,36 @@ function validateAnswersMatchType(
     }
   }
 
+  if (examType === 'true_or_false') {
+    const tfCount = values.filter(v => /^(true|false|t|f)$/i.test(v.trim())).length;
+    const tfRatio  = tfCount / values.length;
+    if (tfRatio < 0.3) {
+      return {
+        valid: false,
+        reason:
+          `This doesn't look like a True or False sheet. ` +
+          `Only ${Math.round(tfRatio * 100)}% of answers are T/F values. ` +
+          `Expected: ${EXAM_TYPE_HINTS[examType]}.`,
+      };
+    }
+  }
+
   return { valid: true, reason: '' };
 }
 
-// ─── Corner component ─────────────────────────────────────────────────────────
+// ─── Local type extensions ────────────────────────────────────────────────────
+// ParsedScanPayload from scanApi may not yet expose all fields used here.
+// Extend it locally until the shared type is updated.
+interface ScanPayloadExtended {
+  success: boolean;
+  message?: string;
+  answers?: Record<string, string>;
+  studentName?: string;
+  confidence?: number;
+  notes?: string;
+}
+
+
 
 type CornerPos = 'tl' | 'tr' | 'bl' | 'br';
 function FrameCorner({ pos, color, size = 22, thickness = 3 }: {
@@ -249,7 +269,7 @@ export default function ScanTab() {
   const [hasKey, setHasKey]             = useState(false);
   const [step, setStep]                 = useState(1);
 
-  const [examType, setExamType]                   = useState<ExamType>('bubble_mc');
+  const [examType, setExamType]                   = useState<ExamType>('multiple_choice');
   const [showExamTypeModal, setShowExamTypeModal] = useState(false);
   const [ocrConfidence, setOcrConfidence]         = useState<number>(1);
   const [noPaperError, setNoPaperError]           = useState(false);
@@ -281,9 +301,17 @@ export default function ScanTab() {
     return () => { scanLoop.stop(); glowLoop.stop(); };
   }, []);
 
-  useEffect(() => {
-    if (sectionId) fetchAnswerKeyFromApi(sectionId).then(rec => setHasKey(!!rec?.key?.length));
+  // Fetch answer key on mount AND every time screen is focused
+  // so returning from AddAnswerKey immediately reflects the new key
+  const refreshAnswerKey = useCallback(() => {
+    if (sectionId) {
+      fetchAnswerKeyFromApi(sectionId).then(rec => setHasKey(!!rec?.key?.length));
+    }
   }, [sectionId]);
+
+  useEffect(() => { refreshAnswerKey(); }, [refreshAnswerKey]);
+
+  useFocusEffect(refreshAnswerKey);
 
   // Reload user settings every time the screen is focused
   useFocusEffect(
@@ -331,7 +359,7 @@ export default function ScanTab() {
       const ocrResult = await Promise.race([
         scanExamSheet(
           { uri, fileExtension: ext },
-          { examType, sectionId: sectionId! },
+          { examType, questionCount: totalQs },
           (msg: string) => {
             if (msg.startsWith('Retrying')) {
               setProcessingStatus(msg);
@@ -343,7 +371,7 @@ export default function ScanTab() {
           },
         ),
         timeoutPromise,
-      ]);
+      ]) as unknown as ScanPayloadExtended;
 
       if (timeoutId) clearTimeout(timeoutId);
 
@@ -602,8 +630,7 @@ export default function ScanTab() {
     const picked = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       quality:    1,
-      allowsEditing: true,
-      aspect:     [3, 4],
+      allowsEditing: false,
     });
 
     if (picked.canceled || !picked.assets?.[0]) return;
