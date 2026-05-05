@@ -8,7 +8,7 @@
 //       â€¢ modulate (brightness +10%)  â†’ lifts faint ballpen strokes
 //       â€¢ median filter (3px)         â†’ removes salt-and-pepper noise
 //       â€¢ threshold raised to 175     â†’ better binarisation for dark ink on white
-//       â€¢ resize to 2800px            â†’ more pixels for LSTM on small handwriting
+//       â€¢ resize to 20px            â†’ more pixels for LSTM on small handwriting
 //  2. PSM sequence extended: [4, 6, 3, 11, 12]
 //       â€¢ PSM 12 (sparse text w/ OSD) added â€” catches isolated written letters
 //  3. Handwriting-specific inverted retry on ALL exam types (not just MC)
@@ -463,7 +463,7 @@ function typeSummary(key) {
 //  6.  sharpen(2.0)     â€” stronger sharpening than before (Ïƒ=1.5 â†’ 2.0) for handwriting
 //  7.  threshold(175)   â€” binarise; 175 works better for dark ballpen on white
 //                         (original used 160 which was tuned for pencil marks)
-//  8.  resize(2800)     â€” more pixels than before (2480 â†’ 2800) so tiny handwritten
+//  8.  resize(20)     â€” more pixels than before (24 â†’ 20) so tiny handwritten
 //                         characters have enough resolution for LSTM to decode
 //
 //  Result: PNG buffer â€” no temp file needed.
@@ -489,7 +489,7 @@ async function preprocessImage(base64, mimeType) {
       // characters that Tesseract couldn't recognize. 155 preserves more of the ink.
       .threshold(155)
       .resize({
-        width:              2800,            // âœ¨ UPGRADED: 2480â†’2800 for small text
+        width:              2000,          // FIX: was accidentally 20px — too small for Tesseract
         fit:                'inside',
         withoutEnlargement: false,
       })
@@ -553,7 +553,7 @@ async function tryOcrWithPsm(imageBuffer, psmMode, extraParams = {}) {
 // â”€â”€â”€ Multi-PSM Tesseract runner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async function runTesseract(imageBase64, mimeType = 'image/jpeg', examType = 'bubble_mc') {
-  const isMcType    = examType === 'bubble_mc' || examType === 'text_mc';
+  const isMcType    = examType === 'bubble_mc' || examType === 'text_mc' || examType === 'bubble_omr' || examType === 'multiple_choice';
   const psmList     = isMcType ? PSM_SEQUENCE_MC : PSM_SEQUENCE_TEXT;
   const whitelist   = isMcType ? CHAR_WHITELIST_MC : CHAR_WHITELIST_TEXT;
   const imageBuffer = await preprocessImage(imageBase64, mimeType);
@@ -627,7 +627,7 @@ async function runTesseract(imageBase64, mimeType = 'image/jpeg', examType = 'bu
     try {
       console.log('[AutoChecker] Trying lighter threshold (140) for faint handwritingâ€¦');
       const lightBuffer = await sharp(Buffer.from(imageBase64, 'base64'))
-        .rotate().greyscale().normalise().sharpen({ sigma: 1.5 }).threshold(140).resize({ width: 2800, fit: 'inside', withoutEnlargement: false }).png().toBuffer();
+        .rotate().greyscale().normalise().sharpen({ sigma: 1.5 }).threshold(140).resize({ width: 2000, fit: 'inside', withoutEnlargement: false }).png().toBuffer();
       const { text, confidence } = await tryOcrWithPsm(lightBuffer, 6, extraParams);
       const score = isMcType ? scoreMcText(text) : scoreTextBlock(text);
       console.log(`[Tesseract light-threshold] score=${score}, conf=${confidence?.toFixed(1)}%`);
@@ -805,22 +805,97 @@ function extractStudentName(text) {
 // âœ¨ UPGRADED: never throws for empty/unreadable text
 //             returns empty answers map with confidence=0 instead
 
-async function parseVisionText(imageBase64, mimeType, examType, questionCount) {
-  const isMcType = examType === 'bubble_mc' || examType === 'text_mc';
+// ─── Claude Vision bubble sheet parser ────────────────────────────────────────
+// Routes bubble_mc to Claude Vision API (claude-sonnet) which understands
+// the visual layout of filled circles — Tesseract cannot do this reliably.
+// Falls back to Tesseract if ANTHROPIC_API_KEY is not set.
 
+async function parseBubbleSheetWithClaude(imageBase64, mimeType, questionCount) {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.warn('[AutoChecker] ANTHROPIC_API_KEY not set — falling back to Tesseract for bubble sheet');
+    return null;
+  }
+
+  const prompt = `You are scanning a bubble OMR exam answer sheet. Look carefully at the image.
+
+For each question 1 to ${questionCount}, identify which bubble is filled/shaded (A, B, C, or D).
+A filled bubble = the circle is darkened or shaded in.
+An empty bubble = only an outline, not filled.
+If no bubble is filled for a question, use "" (empty string).
+If you can read the student name on the sheet, include it.
+
+Return ONLY a raw JSON object — no markdown, no explanation:
+{"studentName": null, "answers": {"1": "A", "2": "C", "3": "", ...}}`;
+
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 1024,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: mimeType || 'image/jpeg', data: imageBase64 } },
+        { type: 'text', text: prompt },
+      ],
+    }],
+  });
+
+  const rawText = response.content[0]?.text ?? '';
+  console.log('[Claude Vision] Response preview:', rawText.slice(0, 300));
+
+  const cleaned = rawText.replace(/```json|```/g, '').trim();
+  let parsed;
+  try { parsed = JSON.parse(cleaned); }
+  catch {
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (match) parsed = JSON.parse(match[0]);
+    else throw new Error('Could not parse Claude Vision JSON response');
+  }
+
+  const answers = {};
+  const validLetters = new Set(['A', 'B', 'C', 'D']);
+  for (let i = 1; i <= questionCount; i++) {
+    const raw = (parsed.answers?.[String(i)] ?? '').toString().trim().toUpperCase();
+    answers[String(i)] = validLetters.has(raw) ? raw : '';
+  }
+
+  const answeredCount = Object.values(answers).filter(a => a !== '').length;
+  const fillRate = questionCount > 0 ? answeredCount / questionCount : 0;
+  // Claude Vision is highly accurate — confidence reflects fill rate
+  const confidence = fillRate >= 0.5 ? Math.min(0.88 + fillRate * 0.09, 0.97) : Math.max(0.5 + fillRate * 0.4, 0.3);
+
+  console.log(`[AutoChecker] Claude Vision — answered: ${answeredCount}/${questionCount}, confidence: ${(confidence * 100).toFixed(1)}%`);
+
+  return {
+    studentName: typeof parsed.studentName === 'string' && parsed.studentName.trim() ? parsed.studentName.trim() : null,
+    answers,
+    answeredCount,
+    engineConfidence: confidence * 100,
+    confidence,
+  };
+}
+
+async function parseVisionText(imageBase64, mimeType, examType, questionCount) {
+  const isBubble = examType === 'bubble_mc' || examType === 'bubble_omr';
+  const isMcType = isBubble || examType === 'text_mc' || examType === 'multiple_choice';
+
+  // ── Route bubble_mc to Claude Vision first ────────────────────────────────
+  if (isBubble) {
+    try {
+      const claudeResult = await parseBubbleSheetWithClaude(imageBase64, mimeType, questionCount);
+      if (claudeResult) return claudeResult;
+    } catch (err) {
+      console.warn('[AutoChecker] Claude Vision failed, falling back to Tesseract:', err.message);
+    }
+    console.log('[AutoChecker] Falling back to Tesseract for bubble sheet...');
+  }
+
+  // ── Tesseract path (text_mc, written types, or bubble fallback) ───────────
   const { text: rawText, engineConfidence } =
     await runTesseract(imageBase64, mimeType, examType);
 
-  // âœ¨ UPGRADED: don't throw â€” return empty result so UI can show friendly message
   if (!rawText?.trim()) {
     console.warn('[AutoChecker] OCR returned empty text');
-    return {
-      studentName:    null,
-      answers:        buildEmptyAnswers(questionCount),
-      answeredCount:  0,
-      engineConfidence: 0,
-      confidence:     0,
-    };
+    return { studentName: null, answers: buildEmptyAnswers(questionCount), answeredCount: 0, engineConfidence: 0, confidence: 0 };
   }
 
   const cleanText   = fixOcrSubstitutions(rawText);
@@ -830,39 +905,26 @@ async function parseVisionText(imageBase64, mimeType, examType, questionCount) {
   if (isMcType) {
     Object.assign(answers, extractMcAnswers(cleanText, questionCount));
   } else {
-    // âœ¨ UPGRADED: use new extractWrittenAnswers for non-MC types
     Object.assign(answers, extractWrittenAnswers(cleanText, questionCount, examType));
-
-    // Fallback: also try parseTextLines (handles "1. answer" format)
     parseTextLines(cleanText).forEach(item => {
       if (item.question >= 1 && item.question <= questionCount && !answers[String(item.question)]) {
-        answers[String(item.question)] = Array.isArray(item.answer)
-          ? item.answer.join(', ')
-          : item.answer;
+        answers[String(item.question)] = Array.isArray(item.answer) ? item.answer.join(', ') : item.answer;
       }
     });
   }
 
-  // Fill blanks for unanswered questions
   for (let i = 1; i <= questionCount; i++) {
     if (!answers[String(i)]) answers[String(i)] = '';
   }
 
   const answeredCount = Object.values(answers).filter(a => a !== '').length;
-
   const normalizedEng = Math.max((engineConfidence ?? 0), 0) / 100;
   const fillRate      = questionCount > 0 ? answeredCount / questionCount : 0;
-  const fillBonus     = fillRate * 0.1;
-  const confidence    = Math.min(normalizedEng + fillBonus, 1.0);
+  const confidence    = Math.min(normalizedEng + fillRate * 0.1, 1.0);
 
-  console.log(
-    `[AutoChecker] Parsed â€” answered: ${answeredCount}/${questionCount}, ` +
-    `engine: ${engineConfidence?.toFixed?.(1) ?? 'n/a'}%, composite: ${(confidence * 100).toFixed(1)}%`
-  );
-
+  console.log(`[AutoChecker] Parsed — answered: ${answeredCount}/${questionCount}, engine: ${engineConfidence?.toFixed?.(1) ?? 'n/a'}%, composite: ${(confidence * 100).toFixed(1)}%`);
   return { studentName, answers, answeredCount, engineConfidence, confidence };
 }
-
 function buildEmptyAnswers(count) {
   const ans = {};
   for (let i = 1; i <= count; i++) ans[String(i)] = '';
@@ -1131,4 +1193,4 @@ setInterval(() => {
 
 // redeploy-trigger-20260505074430
 
-// 20260505080613
+// 202605050613
