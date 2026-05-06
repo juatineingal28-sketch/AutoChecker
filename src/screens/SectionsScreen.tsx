@@ -10,7 +10,7 @@
  */
 
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import * as DocumentPicker from 'expo-document-picker';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
@@ -526,8 +526,9 @@ export default function SectionsScreen() {
     }
   }, []);
 
-  // ✅ FIX: Only load on mount — removed the focus listener that re-fired on every visit
+  // Load on mount AND whenever the screen is focused (e.g. returning from AddAnswerKey)
   useEffect(() => { loadSections(); }, [loadSections]);
+  useFocusEffect(useCallback(() => { loadSections(); }, [loadSections]));
 
   // ── Upload ──────────────────────────────────────────────────────────────────
 

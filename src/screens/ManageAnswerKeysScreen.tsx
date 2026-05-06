@@ -3,20 +3,20 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import React, { useCallback, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import {
-    deleteAnswerKey,
-    fetchAnswerKey,
-    fetchSections,
-    type AnswerKeyRecord,
-    type Section,
+  deleteAnswerKey,
+  fetchAnswerKey,
+  fetchSections,
+  type AnswerKeyRecord,
+  type Section,
 } from '../services/api';
 import { Colors, Radius, Spacing } from '../theme';
 
@@ -34,12 +34,15 @@ const COLOR_MAP = {
 };
 
 const TYPE_LABELS: Record<string, string> = {
-  mc:             'MC',
-  truefalse:      'T/F',
-  identification: 'ID',
-  enumeration:    'Enum',
-  traceError:     'Trace',
-  shortAnswer:    'SA',
+  // Current ExamType keys
+  bubble_omr:      'OMR',
+  multiple_choice: 'MC',
+  identification:  'ID',
+  enumeration:     'Enum',
+  true_or_false:   'T/F',
+  // Legacy backend keys (backend still returns these)
+  mc:              'OMR',
+  truefalse:       'T/F',
 };
 
 export default function ManageAnswerKeysScreen() {

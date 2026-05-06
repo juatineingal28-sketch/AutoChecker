@@ -176,6 +176,7 @@
     "expo-media-library": "~17.0.6",
     "expo-modules-autolinking": "~2.0.0",
     "expo-modules-core": "~2.2.3",
+    "expo-print": "~14.0.3",
     "expo-sharing": "~13.0.1",
     "expo-splash-screen": "~0.29.24",
     "expo-status-bar": "~2.0.1",
@@ -274,6 +275,7 @@
     "jest-util": "^29.7.0",
     "jest-validate": "^29.7.0",
     "jest-worker": "^29.7.0",
+    "jimp": "^1.6.1",
     "jimp-compact": "^0.16.1",
     "join-component": "^1.1.0",
     "js-tokens": "^4.0.0",
@@ -585,6 +587,7 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
+    "@types/node": "^25.6.0",
     "@types/react": "~18.3.12",
     "@types/react-native": "^0.72.8",
     "@types/uuid": "^10.0.0"

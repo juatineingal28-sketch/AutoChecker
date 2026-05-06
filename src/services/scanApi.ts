@@ -17,7 +17,7 @@ import * as FileSystem from 'expo-file-system';
 import * as ImageManipulator from 'expo-image-manipulator';
 
 import type { ExamType } from '../types/exam';
-import { BASE_URL } from './api';
+import { BASE_URL, toBackendExamType } from './api';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -238,7 +238,7 @@ async function postToOcr(
       body:    JSON.stringify({
         imageBase64: base64,
         mimeType:    'image/jpeg',
-        examType:    options.examType,
+        examType:    toBackendExamType(options.examType),
         sectionId:   options.sectionId ?? null,
       }),
       signal: controller.signal,

@@ -139,7 +139,7 @@ function validateAnswersMatchType(
   const avgLength = values.reduce((s, v) => s + v.trim().length, 0) / values.length;
 
   if (examType === 'multiple_choice' || examType === 'bubble_omr') {
-    if (singleLetterRatio < 0.3) {
+    if (singleLetterRatio < 0.15) {
       return {
         valid: false,
         reason:
@@ -386,7 +386,22 @@ export default function ScanTab() {
         return;
       }
 
-      const { answers, studentName: detectedName, confidence, notes } = ocrResult;
+      const { answers: rawAnswers, studentName: detectedName, confidence, notes } = ocrResult;
+
+      // Normalize OCR noise: "Cc" -> "C", "8" -> "B", "0" -> "D" etc.
+      const digitToLetter: Record<string, string> = { '8': 'B', '6': 'B', '0': 'D', '1': 'A', '4': 'A' };
+      const answers: Record<string, string> = {};
+      for (const [k, v] of Object.entries(rawAnswers ?? {})) {
+        const trimmed = v.trim();
+        const letterMatch = trimmed.match(/^([A-Ea-e])/i);
+        if (letterMatch) {
+          answers[k] = letterMatch[1].toUpperCase();
+        } else if (digitToLetter[trimmed]) {
+          answers[k] = digitToLetter[trimmed];
+        } else {
+          answers[k] = trimmed;
+        }
+      }
 
       if (!answers || Object.keys(answers).length === 0) {
         setIsProcessing(false);
@@ -398,36 +413,74 @@ export default function ScanTab() {
         return;
       }
 
-      const typeCheck = validateAnswersMatchType(answers, examType);
-      if (!typeCheck.valid) {
-        // Hard block — scan is rejected, no "Save Anyway" bypass allowed.
-        setIsProcessing(false);
-        setStep(1);
-        setEdgeDetected(false);
-        await new Promise<never>((_, reject) => {
+      // ── Bubble OMR: skip letter-ratio validation ──────────────────────────
+      // The OCR backend uses Tesseract (text recognition) for all exam types,
+      // including bubble_omr. Tesseract reads printed characters — it cannot
+      // detect filled circles. When a true OMR sheet is scanned, bubble marks
+      // often come back as noise, digits, or empty strings that fail the
+      // single-letter ratio check, producing a false "Wrong Exam Type" alert.
+      //
+      // Skip validateAnswersMatchType for bubble_omr entirely.
+      // If the backend returns no recognisable answers for a bubble sheet,
+      // show a specific OMR error instead of the misleading "Wrong Exam Type".
+      if (examType === 'bubble_omr') {
+        const validBubbleAnswers = Object.values(answers).filter(
+          v => v && v !== '?' && v !== '—' && /^[A-Da-d]$/.test(v.trim())
+        );
+        if (validBubbleAnswers.length === 0) {
+          setIsProcessing(false);
+          setStep(1);
+          setEdgeDetected(false);
           Alert.alert(
-            '❌ Wrong Exam Type',
-            `This answer sheet does not match the selected exam type.\n\n` +
-            `Selected:  ${EXAM_TYPE_LABELS[examType]}\n` +
-            `Expected:  ${EXAM_TYPE_HINTS[examType]}\n\n` +
-            `${typeCheck.reason}\n\n` +
-            `Please select the correct exam type and scan again.`,
+            '⬤  Bubble OMR Not Detected',
+            'The scanner could not read any filled bubbles from this sheet.\n\n' +
+            'This happens because the scan engine reads printed text, not shaded circles.\n\n' +
+            'Tips:\n' +
+            '• Make sure bubbles are filled darkly (not lightly shaded)\n' +
+            '• Use bright, even lighting with no glare\n' +
+            '• Hold the camera directly above the sheet\n\n' +
+            'If your sheet has letters written in boxes instead of bubbles, switch to ① Multiple Choice.',
             [
-              {
-                text: '🔄 Change Type',
-                onPress: () => {
-                  setShowExamTypeModal(true);
-                  reject(new Error('__type_mismatch_rescan__'));
-                },
-              },
-              {
-                text: 'Try Again',
-                onPress: () => reject(new Error('__type_mismatch_rescan__')),
-              },
-            ],
-            { cancelable: false },
+              { text: '🔄 Switch to MC', onPress: () => { setShowExamTypeModal(true); } },
+              { text: 'Try Again',       onPress: () => { setStep(1); setEdgeDetected(false); } },
+              { text: 'Cancel',          style: 'cancel', onPress: () => setStep(1) },
+            ]
           );
-        });
+          return;
+        }
+      } else {
+        // For all non-bubble types, run the normal answer-format validation.
+        const typeCheck = validateAnswersMatchType(answers, examType);
+        if (!typeCheck.valid) {
+          // Hard block — scan is rejected, no "Save Anyway" bypass allowed.
+          setIsProcessing(false);
+          setStep(1);
+          setEdgeDetected(false);
+          await new Promise<never>((_, reject) => {
+            Alert.alert(
+              '❌ Wrong Exam Type',
+              `This answer sheet does not match the selected exam type.\n\n` +
+              `Selected:  ${EXAM_TYPE_LABELS[examType]}\n` +
+              `Expected:  ${EXAM_TYPE_HINTS[examType]}\n\n` +
+              `${typeCheck.reason}\n\n` +
+              `Please select the correct exam type and scan again.`,
+              [
+                {
+                  text: '🔄 Change Type',
+                  onPress: () => {
+                    setShowExamTypeModal(true);
+                    reject(new Error('__type_mismatch_rescan__'));
+                  },
+                },
+                {
+                  text: 'Try Again',
+                  onPress: () => reject(new Error('__type_mismatch_rescan__')),
+                },
+              ],
+              { cancelable: false },
+            );
+          });
+        }
       }
 
       if (settings.autoDetect && detectedName && !studentName.trim()) setStudentName(detectedName);

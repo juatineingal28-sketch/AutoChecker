@@ -15,7 +15,7 @@ import * as FileSystem from 'expo-file-system';
 import type { ExamType, ScanResult } from '../types/exam';
 import type { ParsedScanPayload } from '../utils/ocrParser';
 import { parseOcrPayload } from '../utils/ocrParser';
-import { BASE_URL } from './api';
+import { BASE_URL, toBackendExamType } from './api';
 import { supabase } from './supabaseScans';
 
 // ─── Storage key helpers ──────────────────────────────────────────────────────
@@ -286,7 +286,7 @@ export async function scanExamSheet(
   const response = await fetch(`${BASE_URL}/api/scan`, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ imageBase64: base64, mimeType, examType, questionCount }),
+    body:    JSON.stringify({ imageBase64: base64, mimeType, examType: toBackendExamType(examType), questionCount }),
   });
 
   if (!response.ok) {

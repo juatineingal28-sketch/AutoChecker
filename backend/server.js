@@ -415,19 +415,108 @@ async function parseUploadedFile(filePath, ext) {
       // Remove excess blank lines
       .replace(/\n{3,}/g, '\n\n');
 
-    const items = parseTextLines(text);
+    // ── Section-aware parsing (handles mixed answer key types) ────────────────
+    // Detect section headers like "MULTIPLE CHOICE ANSWERKEY", "IDENTIFICATION", etc.
+    const SECTION_PATTERNS = [
+      { type: 'mc',            re: /multiple\s*choice|bubble\s*omr|omr/i },
+      { type: 'identification',re: /identification|identify/i },
+      { type: 'enumeration',   re: /enumeration|enumerate/i },
+      { type: 'truefalse',     re: /true\s*(or|\/)\s*false|t\s*[\/or]+\s*f\b/i },
+    ];
 
-    console.log(`[AutoChecker] DOCX extracted ${text.split('\n').length} lines`);
+    function detectSectionType(line) {
+      // Strip trailing "ANSWERKEY(S)" and punctuation
+      const cleaned = line.trim().replace(/[:.]+$/, '').replace(/\s*answer\s*keys?$/i, '').trim();
+      if (/^\d+[.):\s]/.test(cleaned) || cleaned.length > 60) return null;
+      for (const def of SECTION_PATTERNS) {
+        if (def.re.test(cleaned)) return def.type;
+      }
+      return null;
+    }
+
+    function stripBullet(line) {
+      return line.replace(/^[\t ]*[-–—*•]\s+/, '').trim();
+    }
+
+    // Check if this docx has section headers
+    const rawLines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    const hasSections = rawLines.some(l => detectSectionType(l) !== null);
+
+    let items;
+
+    if (hasSections) {
+      // Section-aware parsing: group lines by section, auto-number within each section
+      items = [];
+      let currentType = null;
+      let globalQ = 1;
+      let sectionLines = [];
+
+      const flushSection = () => {
+        if (!currentType || sectionLines.length === 0) return;
+        let autoNum = 1;
+        for (const sLine of sectionLines) {
+          const stripped = stripBullet(sLine);
+          if (!stripped) continue;
+
+          // Check if line has its own number (e.g. "1. CSS" or "1) True")
+          const numMatch = stripped.match(/^(\d+)\s*[.):\s]\s*(.+)/);
+          let rawAnswer, lineNum;
+          if (numMatch) {
+            lineNum  = parseInt(numMatch[1], 10);
+            rawAnswer = numMatch[2].trim();
+          } else {
+            lineNum  = autoNum;
+            rawAnswer = stripped;
+          }
+
+          if (!rawAnswer) continue;
+
+          // Enumeration: comma-separated on one line → expand into multiple items
+          if (currentType === 'enumeration' && rawAnswer.includes(',') && !rawAnswer.includes(';')) {
+            const parts = rawAnswer.split(',').map(s => s.trim()).filter(Boolean);
+            if (parts.length > 1) {
+              for (const part of parts) {
+                items.push({ question: globalQ++, type: 'enumeration', answer: normalizeAnswer('enumeration', part) });
+              }
+              autoNum++;
+              continue;
+            }
+          }
+
+          items.push({ question: globalQ++, type: currentType, answer: normalizeAnswer(currentType, rawAnswer) });
+          autoNum = lineNum + 1;
+        }
+        sectionLines = [];
+      };
+
+      for (const line of rawLines) {
+        const sType = detectSectionType(line);
+        if (sType !== null) {
+          flushSection();
+          currentType = sType;
+        } else if (currentType !== null) {
+          sectionLines.push(line);
+        }
+      }
+      flushSection();
+
+      console.log(`[AutoChecker] DOCX section-aware parse → ${items.length} answers across multiple section types`);
+    } else {
+      // Fallback: legacy numbered-line parser
+      items = parseTextLines(text);
+      console.log(`[AutoChecker] DOCX extracted ${text.split('\n').length} lines → ${items.length} answers (legacy parser)`);
+    }
+
     if (items.length === 0) {
-      console.warn('[AutoChecker] âš ï¸  DOCX: no answer key detected. Raw text sample:\n' + text.slice(0, 500));
+      console.warn('[AutoChecker] ⚠️  DOCX: no answer key detected. Raw text sample:\n' + text.slice(0, 500));
     }
 
     if (items.length) {
-      console.log(`[AutoChecker] âœ… DOCX parsed â€” ${items.length} answers detected successfully`);
+      console.log(`[AutoChecker] ✅ DOCX parsed — ${items.length} answers detected successfully`);
       return { items };
     }
     return {
-      error: 'No readable answer key found in this Word document.\n\nSupported formats:\n  1. A\n  2. B\n  1) True\n  1: photosynthesis\n  A,B,C,D (comma list)\n  [type:enumeration] oxygen, carbon',
+      error: 'No readable answer key found in this Word document.\n\nSupported formats:\n  1. A\n  2. B\n  1) True\n  1: photosynthesis\n  A,B,C,D (comma list)\n  [type:enumeration] oxygen, carbon\n  Or use section headers: MULTIPLE CHOICE ANSWERKEY, IDENTIFICATION ANSWERKEY, etc.',
     };
   }
 
@@ -553,7 +642,8 @@ async function tryOcrWithPsm(imageBuffer, psmMode, extraParams = {}) {
 // â”€â”€â”€ Multi-PSM Tesseract runner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async function runTesseract(imageBase64, mimeType = 'image/jpeg', examType = 'bubble_mc') {
-  const isMcType    = examType === 'bubble_mc' || examType === 'text_mc' || examType === 'bubble_omr' || examType === 'multiple_choice';
+  // ✅ After
+const isMcType = examType === 'bubble_mc' || examType === 'text_mc' || examType === 'bubble_omr' || examType === 'multiple_choice' || examType === 'omr';
   const psmList     = isMcType ? PSM_SEQUENCE_MC : PSM_SEQUENCE_TEXT;
   const whitelist   = isMcType ? CHAR_WHITELIST_MC : CHAR_WHITELIST_TEXT;
   const imageBuffer = await preprocessImage(imageBase64, mimeType);
@@ -805,86 +895,129 @@ function extractStudentName(text) {
 // âœ¨ UPGRADED: never throws for empty/unreadable text
 //             returns empty answers map with confidence=0 instead
 
-// ─── Claude Vision bubble sheet parser ────────────────────────────────────────
-// Routes bubble_mc to Claude Vision API (claude-sonnet) which understands
-// the visual layout of filled circles — Tesseract cannot do this reliably.
-// Falls back to Tesseract if ANTHROPIC_API_KEY is not set.
+// ─── Jimp bubble sheet detector ───────────────────────────────────────────────
+// Pure pixel-based OMR detection — no AI, no Python, no OpenCV.
+//
+// How it works:
+//   1. Decode the base64 image with Jimp
+//   2. Convert to greyscale
+//   3. Divide the sheet into a grid: rows = questions, cols = A/B/C/D
+//   4. For each cell, count dark pixels (brightness < DARK_THRESHOLD)
+//   5. The darkest cell in each row = the filled bubble = the answer
+//
+// Install: npm install jimp
+//
+// IMPORTANT: Your bubble sheet must have a consistent, evenly-spaced grid.
+// TOP_MARGIN_PCT skips the header (name field, title). Increase if needed.
 
-async function parseBubbleSheetWithClaude(imageBase64, mimeType, questionCount) {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    console.warn('[AutoChecker] ANTHROPIC_API_KEY not set — falling back to Tesseract for bubble sheet');
+let Jimp;
+try {
+  Jimp = require('jimp');
+} catch {
+  console.warn('[AutoChecker] jimp not found — bubble OMR will fall back to Tesseract.');
+  console.warn('              Fix: npm install jimp');
+}
+
+// ── Tuning constants ──────────────────────────────────────────────────────────
+const DARK_THRESHOLD   = 128;   // pixels darker than this count as "filled" (0-255)
+const TOP_MARGIN_PCT   = 0.15;  // skip top 15% — header/name area
+const BOT_MARGIN_PCT   = 0.05;  // skip bottom 5%
+const LEFT_MARGIN_PCT  = 0.05;  // skip left 5%
+const RIGHT_MARGIN_PCT = 0.05;  // skip right 5%
+const CHOICES          = 4;     // A B C D
+
+async function detectBubblesWithJimp(imageBase64, mimeType, questionCount) {
+  if (!Jimp) return null;
+
+  console.log(`[BubbleOMR] Jimp detection — ${questionCount} questions`);
+
+  let image;
+  try {
+    const buf = Buffer.from(imageBase64, 'base64');
+    image = await Jimp.read(buf);
+  } catch (err) {
+    console.warn('[BubbleOMR] Failed to decode image:', err.message);
     return null;
   }
 
-  const prompt = `You are scanning a bubble OMR exam answer sheet. Look carefully at the image.
+  image.greyscale();
 
-For each question 1 to ${questionCount}, identify which bubble is filled/shaded (A, B, C, or D).
-A filled bubble = the circle is darkened or shaded in.
-An empty bubble = only an outline, not filled.
-If no bubble is filled for a question, use "" (empty string).
-If you can read the student name on the sheet, include it.
+  const W = image.getWidth();
+  const H = image.getHeight();
 
-Return ONLY a raw JSON object — no markdown, no explanation:
-{"studentName": null, "answers": {"1": "A", "2": "C", "3": "", ...}}`;
+  const x0 = Math.floor(W * LEFT_MARGIN_PCT);
+  const x1 = Math.floor(W * (1 - RIGHT_MARGIN_PCT));
+  const y0 = Math.floor(H * TOP_MARGIN_PCT);
+  const y1 = Math.floor(H * (1 - BOT_MARGIN_PCT));
 
-  const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 1024,
-    messages: [{
-      role: 'user',
-      content: [
-        { type: 'image', source: { type: 'base64', media_type: mimeType || 'image/jpeg', data: imageBase64 } },
-        { type: 'text', text: prompt },
-      ],
-    }],
-  });
+  const gridW = x1 - x0;
+  const gridH = y1 - y0;
+  const cellW = Math.floor(gridW / CHOICES);
+  const cellH = Math.floor(gridH / questionCount);
 
-  const rawText = response.content[0]?.text ?? '';
-  console.log('[Claude Vision] Response preview:', rawText.slice(0, 300));
+  console.log(`[BubbleOMR] Grid: ${W}x${H}px, cell: ${cellW}x${cellH}px`);
 
-  const cleaned = rawText.replace(/```json|```/g, '').trim();
-  let parsed;
-  try { parsed = JSON.parse(cleaned); }
-  catch {
-    const match = cleaned.match(/\{[\s\S]*\}/);
-    if (match) parsed = JSON.parse(match[0]);
-    else throw new Error('Could not parse Claude Vision JSON response');
-  }
-
+  const LABELS = ['A', 'B', 'C', 'D'];
   const answers = {};
-  const validLetters = new Set(['A', 'B', 'C', 'D']);
-  for (let i = 1; i <= questionCount; i++) {
-    const raw = (parsed.answers?.[String(i)] ?? '').toString().trim().toUpperCase();
-    answers[String(i)] = validLetters.has(raw) ? raw : '';
+
+  for (let q = 0; q < questionCount; q++) {
+    const rowY0 = y0 + q * cellH;
+    const rowY1 = rowY0 + cellH;
+    const darkCounts = [0, 0, 0, 0];
+
+    for (let c = 0; c < CHOICES; c++) {
+      const colX0 = x0 + c * cellW;
+      const colX1 = colX0 + cellW;
+      let dark = 0, total = 0;
+      for (let py = rowY0; py < rowY1; py += 2) {
+        for (let px = colX0; px < colX1; px += 2) {
+          const pixel = Jimp.intToRGBA(image.getPixelColor(px, py));
+          if (pixel.r < DARK_THRESHOLD) dark++;
+          total++;
+        }
+      }
+      darkCounts[c] = total > 0 ? dark / total : 0;
+    }
+
+    const maxDark = Math.max(...darkCounts);
+    const bestIdx = darkCounts.indexOf(maxDark);
+    const sorted  = [...darkCounts].sort((a, b) => b - a);
+    const margin  = sorted[0] - (sorted[1] ?? 0);
+
+    const MIN_DARK_RATIO = 0.08;  // at least 8% of cell must be dark
+    const MIN_MARGIN     = 0.03;  // must be 3% darker than runner-up
+
+    answers[String(q + 1)] = (maxDark >= MIN_DARK_RATIO && margin >= MIN_MARGIN)
+      ? LABELS[bestIdx]
+      : '';
+
+    console.log(`[BubbleOMR] Q${q + 1}: [${darkCounts.map(d => (d*100).toFixed(1)+'%').join(', ')}] → ${answers[String(q + 1)] || '(none)'}`);
   }
 
   const answeredCount = Object.values(answers).filter(a => a !== '').length;
-  const fillRate = questionCount > 0 ? answeredCount / questionCount : 0;
-  // Claude Vision is highly accurate — confidence reflects fill rate
-  const confidence = fillRate >= 0.5 ? Math.min(0.88 + fillRate * 0.09, 0.97) : Math.max(0.5 + fillRate * 0.4, 0.3);
+  const fillRate      = questionCount > 0 ? answeredCount / questionCount : 0;
+  const confidence    = fillRate >= 0.5
+    ? Math.min(0.75 + fillRate * 0.20, 0.95)
+    : Math.max(0.3 + fillRate * 0.5, 0.1);
 
-  console.log(`[AutoChecker] Claude Vision — answered: ${answeredCount}/${questionCount}, confidence: ${(confidence * 100).toFixed(1)}%`);
+  console.log(`[BubbleOMR] Done — answered: ${answeredCount}/${questionCount}, confidence: ${(confidence*100).toFixed(1)}%`);
 
-  return {
-    studentName: typeof parsed.studentName === 'string' && parsed.studentName.trim() ? parsed.studentName.trim() : null,
-    answers,
-    answeredCount,
-    engineConfidence: confidence * 100,
-    confidence,
-  };
+  return { studentName: null, answers, answeredCount, engineConfidence: confidence * 100, confidence };
 }
 
-async function parseVisionText(imageBase64, mimeType, examType, questionCount) {
-  const isBubble = examType === 'bubble_mc' || examType === 'bubble_omr';
-  const isMcType = isBubble || examType === 'text_mc' || examType === 'multiple_choice';
 
-  // ── Route bubble_mc to Claude Vision first ────────────────────────────────
+async function parseVisionText(imageBase64, mimeType, examType, questionCount) {
+  // ✅ After — recognizes the new 'omr' string too
+const isBubble = examType === 'bubble_mc' || examType === 'bubble_omr' || examType === 'omr';
+const isMcType = isBubble || examType === 'text_mc' || examType === 'multiple_choice';
+
+  // ── Route bubble_omr to Jimp pixel detector first ───────────────────────
   if (isBubble) {
     try {
-      const claudeResult = await parseBubbleSheetWithClaude(imageBase64, mimeType, questionCount);
-      if (claudeResult) return claudeResult;
+      const jimpResult = await detectBubblesWithJimp(imageBase64, mimeType, questionCount);
+      if (jimpResult) return jimpResult;
     } catch (err) {
-      console.warn('[AutoChecker] Claude Vision failed, falling back to Tesseract:', err.message);
+      console.warn('[AutoChecker] Jimp bubble detection failed, falling back to Tesseract:', err.message);
     }
     console.log('[AutoChecker] Falling back to Tesseract for bubble sheet...');
   }
@@ -1035,6 +1168,53 @@ app.delete('/api/answer-key/:sectionId', (req, res) => {
   res.json({ success: true });
 });
 
+// ─── Extract Text from DOCX / TXT / PDF ──────────────────────────────────────
+//
+// POST /api/extract-text
+// Accepts a .docx, .txt, or .pdf file upload and returns the plain text.
+// Used by UploadScreen to extract answer key text before parsing.
+//
+// Response: { success: true, text: "..." }
+//        or { success: false, error: "..." }
+
+app.post('/api/extract-text', upload.single('file'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ success: false, error: 'No file uploaded.' });
+  }
+
+  const filePath = req.file.path;
+  const ext      = path.extname(req.file.originalname).toLowerCase();
+
+  try {
+    let text = '';
+
+    if (ext === '.docx' || ext === '.doc') {
+      const result = await mammoth.extractRawText({ path: filePath });
+      text = result.value ?? '';
+    } else if (ext === '.txt') {
+      text = fs.readFileSync(filePath, 'utf8');
+    } else if (ext === '.pdf') {
+      const dataBuffer = fs.readFileSync(filePath);
+      const parsed     = await pdfParse(dataBuffer);
+      text = parsed.text ?? '';
+    } else {
+      return res.status(400).json({ success: false, error: `Unsupported file type: ${ext}` });
+    }
+
+    if (!text.trim()) {
+      return res.status(422).json({ success: false, error: 'File appears to be empty or has no readable text.' });
+    }
+
+    res.json({ success: true, text });
+  } catch (err) {
+    console.error('[AutoChecker] extract-text error:', err.message);
+    res.status(500).json({ success: false, error: `Could not extract text: ${err.message}` });
+  } finally {
+    // Clean up uploaded file
+    try { fs.unlinkSync(filePath); } catch {}
+  }
+});
+
 // Score
 app.post('/api/score/:sectionId', (req, res) => {
   const record = readStore(req.params.sectionId);
@@ -1170,6 +1350,7 @@ app.get('/health', (_req, res) => res.json({
   status: 'ok',
   sharp:  !!sharp,
   ocr:    'tesseract.js',
+  bubbleOmr: !!Jimp ? 'jimp-pixel-detection' : 'unavailable (npm install jimp)',
   version: '2.1-smartparser',
 }));
 
