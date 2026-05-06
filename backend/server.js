@@ -1,4 +1,4 @@
-﻿// server.js  â€” AutoChecker Backend  (UPGRADED)
+// server.js  â€” AutoChecker Backend  (UPGRADED)
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // What changed vs original:
@@ -440,7 +440,10 @@ async function parseUploadedFile(filePath, ext) {
 
     // Check if this docx has section headers
     const rawLines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    console.log('[DEBUG] rawLines sample:', JSON.stringify(rawLines.slice(0, 5)));
+    console.log('[DEBUG] line0 detected:', detectSectionType(rawLines[0] || ''));
     const hasSections = rawLines.some(l => detectSectionType(l) !== null);
+    console.log('[DEBUG] hasSections:', hasSections, 'total lines:', rawLines.length);
 
     let items;
 
