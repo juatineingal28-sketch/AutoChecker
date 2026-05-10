@@ -45,6 +45,13 @@ export async function preprocessOMRImage(uri: string): Promise<ProcessedImage> {
   const result = await ImageManipulator.manipulateAsync(
     uri,
     [
+      // FIX (Bug 3): { rotate: 0 } must come FIRST.
+      // expo-image-manipulator uses this as a trigger to apply the EXIF
+      // orientation tag before any other transforms. Without it, photos taken
+      // in portrait mode on Android/iOS are passed to the bubble grid detector
+      // as landscape pixels — all grid coordinates are then on the wrong axis
+      // and bubble detection fails completely.
+      { rotate: 0 },
       {
         resize: {
           width:  OMR_CONFIG.PROC_WIDTH,
